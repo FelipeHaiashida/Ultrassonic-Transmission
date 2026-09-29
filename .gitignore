@@ -1,0 +1,33 @@
+# Ambiente virtual
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.pyc
+
+# Build de executavel (PyInstaller) - gerado a partir do codigo, nao versionado
+build/
+dist/
+*.spec.bak
+
+# Pacote portatil para Windows (grande demais para o git; distribua como
+# GitHub Release em vez de commitar aqui)
+*_windows/
+*_windows.zip
+
+# Audio e texto gerados ao rodar o emissor/receptor
+transmissao.wav
+mensagem.txt
+mensagem_recebida.txt
+decoded_out
+*.wav
+
+# Configuracao local do Claude Code (pessoal, nao compartilhada)
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+
+# SO
+.DS_Store
+Thumbs.db
