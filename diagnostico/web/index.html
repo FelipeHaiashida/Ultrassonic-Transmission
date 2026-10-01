@@ -1,0 +1,999 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Diagnóstico de Som</title>
+<meta name="description" content="Testa a transmissão por som entre dois aparelhos (PC e celular) e explica por que deu certo ou errado.">
+<style>
+:root {
+  --bg: #f5f4f0; --surface: #ffffff; --surface-2: #efede8; --text: #1c1c1e; --muted: #6a6a70;
+  --border: #e0ded8; --accent: #2b62d9; --accent-text: #ffffff;
+  --ok: #1d7f46; --fail: #c4352c; --warn: #a86400; --meter: #2b62d9; --band: rgba(43, 98, 217, .12);
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #131315; --surface: #1c1c1f; --surface-2: #26262a; --text: #ececef; --muted: #9b9ba3;
+    --border: #2f2f34; --accent: #6c9bff; --accent-text: #0d0d10;
+    --ok: #4cc17d; --fail: #ff6d63; --warn: #f0a53a; --meter: #6c9bff; --band: rgba(108, 155, 255, .16);
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #131315; --surface: #1c1c1f; --surface-2: #26262a; --text: #ececef; --muted: #9b9ba3;
+  --border: #2f2f34; --accent: #6c9bff; --accent-text: #0d0d10;
+  --ok: #4cc17d; --fail: #ff6d63; --warn: #f0a53a; --meter: #6c9bff; --band: rgba(108, 155, 255, .16);
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+main { max-width: 760px; margin: 0 auto; padding: 28px 16px 72px; }
+h1 { font-size: 1.6rem; margin: 0 0 4px; letter-spacing: -.01em; }
+.sub { color: var(--muted); margin: 0 0 24px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 18px; margin-bottom: 16px; }
+.row { display: flex; flex-wrap: wrap; gap: 12px; }
+.row > label { flex: 1 1 180px; }
+label { display: block; font-size: .85rem; color: var(--muted); }
+select, input[type=number] { display: block; width: 100%; margin-top: 4px; padding: 10px; font: inherit;
+  color: var(--text); background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; }
+.check { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: .95rem; margin-top: 12px; }
+.tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; background: var(--surface-2);
+  padding: 4px; border-radius: 12px; margin-bottom: 16px; }
+.tabs button { font: inherit; font-weight: 600; padding: 10px 4px; border: 0; border-radius: 9px;
+  background: transparent; color: var(--muted); cursor: pointer; }
+.tabs button[aria-selected=true] { background: var(--surface); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+.btn { font: inherit; font-weight: 600; padding: 14px 18px; border-radius: 12px; border: 0; cursor: pointer;
+  background: var(--accent); color: var(--accent-text); width: 100%; margin-top: 16px; }
+.btn.sec { background: var(--surface-2); color: var(--text); border: 1px solid var(--border); }
+.btn:disabled { opacity: .5; cursor: default; }
+.btns { display: flex; gap: 8px; flex-wrap: wrap; }
+.btns .btn { flex: 1 1 160px; margin-top: 8px; }
+.hint { color: var(--muted); font-size: .9rem; margin: 12px 0 0; }
+.hint li { margin: 2px 0; }
+.status { margin-top: 14px; font-weight: 600; min-height: 1.5em; }
+.meter { margin-top: 14px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; text-align: center; }
+.meter div { background: var(--surface-2); border-radius: 10px; padding: 8px 4px; }
+.meter b { display: block; font-size: 1.25rem; font-variant-numeric: tabular-nums; }
+.meter span { font-size: .75rem; color: var(--muted); }
+canvas { display: block; width: 100%; height: 120px; margin-top: 10px; background: var(--surface-2); border-radius: 10px; }
+.legend { font-size: .75rem; color: var(--muted); margin-top: 4px; }
+.summary { border-left: 4px solid var(--muted); }
+.summary.good { border-left-color: var(--ok); }
+.summary.bad { border-left-color: var(--fail); }
+.summary h2 { margin: 0 0 6px; font-size: 1.15rem; }
+.summary ul { margin: 8px 0 0; padding-left: 20px; }
+.report { font: 12.5px/1.45 var(--mono); white-space: pre-wrap; word-break: break-word;
+  background: var(--surface-2); border-radius: 10px; padding: 12px; overflow-x: auto; }
+.report .ok { color: var(--ok); } .report .fail { color: var(--fail); } .report .warn { color: var(--warn); }
+.report .h { font-weight: 700; color: var(--text); }
+.err { color: var(--fail); font-weight: 600; }
+[hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Diagnóstico de som</h1>
+  <p class="sub">Um aparelho emite, o outro grava. O relatório mostra em que etapa a transmissão falha: no som ou no software do receptor.</p>
+
+  <div class="card">
+    <div class="row">
+      <label>Faixa de frequência
+        <select id="versao">
+          <option value="v4">v4: audível (1 a 3,5 kHz)</option>
+          <option value="v3">v3: quase ultrassom (19 a 21,5 kHz)</option>
+        </select>
+      </label>
+      <label>Perfil de tempo
+        <select id="perfil">
+          <option value="padrao">padrão (sync 1,5 s)</option>
+          <option value="jogo">jogo (sync 0,6 s)</option>
+        </select>
+      </label>
+    </div>
+    <p class="hint">Use a mesma faixa e o mesmo perfil nos dois aparelhos.</p>
+  </div>
+
+  <div class="tabs" role="tablist">
+    <button role="tab" data-tab="emitir" aria-selected="true">Emitir</button>
+    <button role="tab" data-tab="receber" aria-selected="false">Receber</button>
+    <button role="tab" data-tab="arquivo" aria-selected="false">Arquivo .wav</button>
+  </div>
+
+  <section id="tab-emitir" class="card">
+    <div class="row">
+      <label>Repetições <input id="reps" type="number" min="1" max="10" value="3"></label>
+      <label>Intervalo entre elas (s) <input id="intervalo" type="number" min="0" max="30" step="0.5" value="4"></label>
+    </div>
+    <label class="check"><input id="volmax" type="checkbox"> Volume 100% (o Python toca a 55%)</label>
+    <button class="btn" id="btn-emitir">Tocar mensagem de teste</button>
+    <div class="status" id="st-emitir"></div>
+    <ul class="hint">
+      <li>Comece a gravação no outro aparelho <b>antes</b> de tocar.</li>
+      <li>Volume do aparelho no máximo; sem fone nem caixa Bluetooth.</li>
+      <li>iPhone: desligue o modo silencioso, senão o navegador fica mudo.</li>
+    </ul>
+  </section>
+
+  <section id="tab-receber" class="card" hidden>
+    <label>Duração máxima (s) <input id="duracao" type="number" min="10" max="180" value="60"></label>
+    <div class="btns">
+      <button class="btn" id="btn-gravar">Começar a gravar</button>
+      <button class="btn sec" id="btn-parar" disabled>Parar e analisar</button>
+    </div>
+    <div class="status" id="st-receber"></div>
+    <div id="medidor" hidden>
+      <div class="meter">
+        <div><b id="m-tempo">0,0 s</b><span>gravado</span></div>
+        <div><b id="m-pico">0</b><span>pico (int16)</span></div>
+        <div><b id="m-freq">–</b><span>freq. dominante</span></div>
+      </div>
+      <canvas id="espectro" width="700" height="120"></canvas>
+      <div class="legend" id="legenda"></div>
+    </div>
+    <ul class="hint">
+      <li>O navegador vai pedir permissão para usar o microfone.</li>
+      <li>Se o <b>pico</b> não subir quando o outro aparelho tocar, o microfone não está ouvindo. O problema é de permissão ou do microfone escolhido, não do protocolo.</li>
+      <li>Mantenha a tela ligada e esta aba aberta durante a gravação.</li>
+    </ul>
+  </section>
+
+  <section id="tab-arquivo" class="card" hidden>
+    <label>Gravação .wav (de <code>diagnostico_sync.py receber</code> ou baixada daqui)
+      <input id="arquivo" type="file" accept=".wav,audio/wav" style="margin-top:8px">
+    </label>
+    <button class="btn" id="btn-arquivo" disabled>Analisar arquivo</button>
+    <div class="status" id="st-arquivo"></div>
+  </section>
+
+  <div id="resultado" hidden>
+    <div class="card summary" id="resumo"></div>
+    <div class="card">
+      <div class="btns">
+        <button class="btn sec" id="btn-copiar">Copiar relatório</button>
+        <button class="btn sec" id="btn-baixar-rel">Baixar relatório</button>
+        <button class="btn sec" id="btn-baixar-wav">Baixar .wav</button>
+      </div>
+      <div class="report" id="relatorio" style="margin-top:14px"></div>
+    </div>
+  </div>
+</main>
+
+<script>
+'use strict';
+// Porta do diagnostico_sync.py para o navegador. Os algoritmos do receptor
+// (deteccao de sync, fim por silencio, find_data_start, signal_to_hex) sao
+// copias fieis do transfer_lib: o relatorio tem que dizer o que o JOGO faria.
+
+const BASE = { dur: 0.25, gap: 0.15, Fs: 48000, step_hz: 100, SILENCE_FLOOR: 150, CHUNK: 1024, MAX_RECORD_S: 30 };
+const VERSOES = { v4: { fsync: 1000, fbase: 2000 }, v3: { fsync: 19000, fbase: 20000 } };
+const PERFIS = {
+  padrao: { syncDur: 1.5, WARMUP: 2.5, MIDGAP: 0.5, COOLDOWN: 1.0, FADE_IN: 0.5, FIM_SILENCIO: 2.5 },
+  jogo:   { syncDur: 0.6, WARMUP: 0.4, MIDGAP: 0.25, COOLDOWN: 0.3, FADE_IN: 0.2, FIM_SILENCIO: 0.8 },
+};
+const HEX_TESTE = '0123456789abcdef';
+const LIMIAR_NCC = 0.15, TOLERANCIA_MS = 50, SNR_MINIMO_DB = 15;
+
+const $ = (s) => document.querySelector(s);
+const fl = Math.floor;
+const tick = () => new Promise((r) => setTimeout(r, 0));
+const fmt = (v, d = 1) => v.toFixed(d).replace('.', ',');
+
+function cfg() {
+  const versao = $('#versao').value, perfil = $('#perfil').value;
+  return Object.assign({ versao, perfil }, BASE, VERSOES[versao], PERFIS[perfil]);
+}
+
+// ------------------------------------------------------------------ FFT
+
+const _tw = new Map();
+function twiddles(n) {
+  let t = _tw.get(n);
+  if (!t) {
+    const h = n >> 1, c = new Float64Array(h), s = new Float64Array(h);
+    for (let k = 0; k < h; k++) { c[k] = Math.cos(2 * Math.PI * k / n); s[k] = Math.sin(2 * Math.PI * k / n); }
+    t = { c, s }; _tw.set(n, t);
+  }
+  return t;
+}
+
+function fft(re, im, inv) {
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) { let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; }
+  }
+  const { c, s } = twiddles(n), sg = inv ? 1 : -1;
+  for (let size = 2; size <= n; size <<= 1) {
+    const half = size >> 1, step = n / size;
+    for (let i = 0; i < n; i += size) {
+      for (let k = 0; k < half; k++) {
+        const wr = c[k * step], wi = sg * s[k * step], a = i + k, b = a + half;
+        const xr = re[b] * wr - im[b] * wi, xi = re[b] * wi + im[b] * wr;
+        re[b] = re[a] - xr; im[b] = im[a] - xi; re[a] += xr; im[a] += xi;
+      }
+    }
+  }
+  if (inv) for (let i = 0; i < n; i++) { re[i] /= n; im[i] /= n; }
+}
+
+const nextPow2 = (n) => { let p = 1; while (p < n) p <<= 1; return p; };
+
+// |rfft(x)| para qualquer tamanho. Os tons sao lidos em janelas de 7200
+// amostras (nao potencia de 2), entao usa Bluestein para dar o mesmo
+// resultado do numpy em vez de aproximar com zero-padding.
+const _blu = new Map();
+function rfftMag(x) {
+  const N = x.length, H = fl(N / 2) + 1, out = new Float64Array(H);
+  if ((N & (N - 1)) === 0) {
+    const re = Float64Array.from(x), im = new Float64Array(N);
+    fft(re, im, false);
+    for (let k = 0; k < H; k++) out[k] = Math.hypot(re[k], im[k]);
+    return out;
+  }
+  let b = _blu.get(N);
+  if (!b) {
+    const M = nextPow2(2 * N - 1), wr = new Float64Array(N), wi = new Float64Array(N);
+    for (let k = 0; k < N; k++) { const a = Math.PI * ((k * k) % (2 * N)) / N; wr[k] = Math.cos(a); wi[k] = -Math.sin(a); }
+    const br = new Float64Array(M), bi = new Float64Array(M);
+    br[0] = 1;
+    for (let k = 1; k < N; k++) { br[k] = br[M - k] = wr[k]; bi[k] = bi[M - k] = -wi[k]; }
+    fft(br, bi, false);
+    b = { M, wr, wi, br, bi }; _blu.set(N, b);
+  }
+  const { M, wr, wi, br, bi } = b, ar = new Float64Array(M), ai = new Float64Array(M);
+  for (let k = 0; k < N; k++) { ar[k] = x[k] * wr[k]; ai[k] = x[k] * wi[k]; }
+  fft(ar, ai, false);
+  for (let k = 0; k < M; k++) {
+    const r = ar[k] * br[k] - ai[k] * bi[k], i = ar[k] * bi[k] + ai[k] * br[k];
+    ar[k] = r; ai[k] = i;
+  }
+  fft(ar, ai, true);
+  for (let k = 0; k < H; k++) out[k] = Math.hypot(ar[k], ai[k]);
+  return out;
+}
+
+const _bk = new Map();
+function blackman(N) {
+  let w = _bk.get(N);
+  if (!w) {
+    w = new Float64Array(N);
+    if (N === 1) w[0] = 1;
+    else for (let n = 0; n < N; n++) w[n] = 0.42 - 0.5 * Math.cos(2 * Math.PI * n / (N - 1)) + 0.08 * Math.cos(4 * Math.PI * n / (N - 1));
+    _bk.set(N, w);
+  }
+  return w;
+}
+
+function argmax(a, from = 0) {
+  let k = from;
+  for (let i = from + 1; i < a.length; i++) if (a[i] > a[k]) k = i;
+  return k;
+}
+
+function maxAbs(a, i0 = 0, i1 = a.length) {
+  let m = 0;
+  for (let i = i0; i < i1; i++) { const v = Math.abs(a[i]); if (v > m) m = v; }
+  return m;
+}
+
+// round() do Python arredonda .5 para o par.
+function pyRound(x) {
+  const r = Math.round(x);
+  return Math.abs(x % 1) === 0.5 ? 2 * Math.round(x / 2) : r;
+}
+
+// ----------------------------------------------------------- codificacao
+
+function linspace(a, b, n) {
+  const o = new Float64Array(n);
+  if (n === 1) { o[0] = a; return o; }
+  const st = (b - a) / (n - 1);
+  for (let i = 0; i < n; i++) o[i] = a + i * st;
+  if (n > 0) o[n - 1] = b;
+  return o;
+}
+
+// transfer_lib.hex_to_signal, numa taxa de amostragem qualquer.
+function gerarSinal(hex, c, Fs) {
+  const z = (s) => fl(s * Fs);
+  const Nt = z(c.dur), Ng = z(c.gap), Ns = z(c.syncDur);
+  const out = new Float64Array(z(c.WARMUP) + Ns + z(c.MIDGAP) + hex.length * (Nt + Ng) + z(c.COOLDOWN));
+  let p = z(c.WARMUP);
+  const fadeLen = Math.min(z(c.FADE_IN), fl(Ns * 0.33)), rampa = linspace(-Math.PI / 2, 0, fadeLen);
+  const fol = fl(Ns * 0.1), saida = linspace(1, 0, fol);
+  for (let n = 0; n < Ns; n++) {
+    let v = 30 * Math.sin(2 * Math.PI * c.fsync * (n * c.syncDur / Ns));
+    if (n < fadeLen) v *= Math.sin(rampa[n]) + 1;
+    if (n >= Ns - fol) v *= saida[n - (Ns - fol)];
+    out[p + n] = v;
+  }
+  p += Ns + z(c.MIDGAP);
+  const w = blackman(Nt);
+  for (const ch of hex) {
+    const f = c.fbase + c.step_hz * parseInt(ch, 16);
+    for (let n = 0; n < Nt; n++) out[p + n] = 30 * Math.sin(2 * Math.PI * f * (n * c.dur / Nt)) * w[n];
+    p += Nt + Ng;
+  }
+  return out;
+}
+
+// transfer_lib.normalize_audio: pico em 18000 (int16), truncado.
+function normalizar(x) {
+  const m = maxAbs(x), o = new Float64Array(x.length);
+  if (m === 0) return o;
+  for (let i = 0; i < x.length; i++) o[i] = Math.trunc((x[i] / m) * 18000);
+  return o;
+}
+
+const passo = (c) => fl((c.dur + c.gap) * c.Fs);
+
+function gerarMolde(hex, c) {
+  const s = normalizar(gerarSinal(hex, c, c.Fs));
+  const ini = fl(c.WARMUP * c.Fs) + fl(c.syncDur * c.Fs) + fl(c.MIDGAP * c.Fs);
+  return s.slice(ini, ini + hex.length * passo(c));
+}
+
+// --------------------------------------------- receptor (copia do transfer_lib)
+
+function findDataStart(sig, c) {
+  const win = 256, n = fl(sig.length / win);
+  if (n === 0) return null;
+  const env = new Float64Array(n);
+  for (let i = 0; i < n; i++) env[i] = maxAbs(sig, i * win, (i + 1) * win);
+  const pico = maxAbs(env);
+  if (pico <= 0) return null;
+  const alto = Math.max(c.SILENCE_FLOOR, 0.10 * pico), baixo = Math.max(c.SILENCE_FLOOR, 0.02 * pico);
+  let i = 0;
+  while (i < n && env[i] < alto) i++;
+  while (i < n && env[i] >= alto) i++;
+  while (i < n && env[i] < alto) i++;
+  if (i >= n) return null;
+  while (i > 0 && env[i - 1] >= baixo) i--;
+  return i * win;
+}
+
+function dominantFreq(seg, Fs) {
+  const w = blackman(seg.length), x = new Float64Array(seg.length);
+  for (let i = 0; i < seg.length; i++) x[i] = seg[i] * w[i];
+  return argmax(rfftMag(x)) * Fs / seg.length;
+}
+
+function signalToHex(sig, c) {
+  const inicio = findDataStart(sig, c);
+  if (inicio === null) return '';
+  const p = passo(c), recuo = fl(0.20 * c.dur * c.Fs), largura = fl(0.60 * c.dur * c.Fs);
+  const limiar = Math.max(c.SILENCE_FLOOR, 0.05 * maxAbs(sig));
+  let out = '';
+  for (let k = 0; ; k++) {
+    const a = inicio + k * p + recuo, b = a + largura;
+    if (b > sig.length) break;
+    if (maxAbs(sig, a, b) < limiar) continue;
+    const freq = dominantFreq(sig.subarray(a, b), c.Fs);
+    if (!(c.fbase - 500 < freq && freq < c.fbase + 16 * c.step_hz + 500)) continue;
+    const v = pyRound((freq - c.fbase) / c.step_hz);
+    if (v >= 0 && v <= 15) out += v.toString(16);
+  }
+  return out;
+}
+
+function disparaSync(bloco, c) {
+  const ft = rfftMag(bloco);
+  for (let k = 0; k < 20; k++) ft[k] = 0;
+  const hz = argmax(ft) * c.Fs / bloco.length;
+  return c.fsync - 300 < hz && hz < c.fsync + 300;
+}
+
+// transfer_lib._coletar, anotando onde comecou, onde parou e por que.
+function simularReceptor(audio, c, dispara, picos) {
+  const CH = c.CHUNK, nb = picos.length, limite = (c.Fs / CH) * c.FIM_SILENCIO;
+  const sessoes = [];
+  let i = 0;
+  while (i < nb) {
+    let ini = null, silencio = 0, total = 0, motivo = 'acabou a gravação', j = i;
+    for (; j < nb; j++) {
+      if (ini === null && dispara[j]) ini = j;
+      if (ini !== null) {
+        total += CH;
+        if (total > c.MAX_RECORD_S * c.Fs) { motivo = `teto de ${c.MAX_RECORD_S}s`; break; }
+        silencio = picos[j] < c.SILENCE_FLOOR ? silencio + 1 : 0;
+        if (silencio > limite) { motivo = 'silêncio final'; break; }
+      }
+    }
+    if (ini === null) break;
+    const fim = Math.min(j + 1, nb), trecho = audio.subarray(ini * CH, fim * CH);
+    sessoes.push({ ini: ini * CH, fim: fim * CH, motivo, hex: signalToHex(trecho, c), dataStart: findDataStart(trecho, c) });
+    i = fim;
+  }
+  return sessoes;
+}
+
+// ------------------------------------------------- receptor ideal (oraculo)
+
+// Correlacao com o trecho de dados conhecido (overlap-save), normalizada
+// pela energia local. Nao depende de sync nem de limiar de amplitude.
+async function localizarTransmissoes(x, molde) {
+  const L = x.length, m = molde.length;
+  if (L < m) return [];
+  const Nf = nextPow2(2 * m), B = Nf - m + 1, nOut = L - m + 1;
+  const hr = new Float64Array(Nf), hi = new Float64Array(Nf);
+  hr.set(molde);
+  fft(hr, hi, false);
+  const ncc = new Float64Array(nOut), xr = new Float64Array(Nf), xi = new Float64Array(Nf);
+  for (let s = 0; s < nOut; s += B) {
+    xr.fill(0); xi.fill(0);
+    xr.set(x.subarray(s, Math.min(L, s + Nf)));
+    fft(xr, xi, false);
+    for (let k = 0; k < Nf; k++) {
+      const r = xr[k] * hr[k] + xi[k] * hi[k], i = xi[k] * hr[k] - xr[k] * hi[k];
+      xr[k] = r; xi[k] = i;
+    }
+    fft(xr, xi, true);
+    const cnt = Math.min(B, nOut - s);
+    for (let n = 0; n < cnt; n++) ncc[s + n] = xr[n];
+    await tick();
+  }
+  const P = new Float64Array(L + 1);
+  for (let i = 0; i < L; i++) P[i + 1] = P[i] + x[i] * x[i];
+  let hn = 0;
+  for (let i = 0; i < m; i++) hn += molde[i] * molde[i];
+  hn = Math.sqrt(hn);
+  for (let n = 0; n < nOut; n++) ncc[n] = Math.abs(ncc[n]) / (hn * Math.sqrt(Math.max(P[n + m] - P[n], 1e-9)));
+  const achadas = [];
+  while (achadas.length < 50) {
+    const i = argmax(ncc);
+    if (ncc[i] < LIMIAR_NCC) break;
+    achadas.push([i, ncc[i]]);
+    ncc.fill(0, Math.max(0, i - m), Math.min(nOut, i + m));
+  }
+  return achadas.sort((a, b) => a[0] - b[0]);
+}
+
+// Como dominantFreq, mas so procura o pico entre o digito 0 e o f.
+function freqNaFaixa(seg, c) {
+  const w = blackman(seg.length), x = new Float64Array(seg.length);
+  for (let i = 0; i < seg.length; i++) x[i] = seg[i] * w[i];
+  const ft = rfftMag(x), N = seg.length;
+  const k0 = Math.ceil((c.fbase - c.step_hz) * N / c.Fs), k1 = fl((c.fbase + 16 * c.step_hz) * N / c.Fs);
+  let k = k0;
+  for (let i = k0 + 1; i <= k1 && i < ft.length; i++) if (ft[i] > ft[k]) k = i;
+  return k * c.Fs / N;
+}
+
+function amplitudeEm(seg, f, Fs) {
+  const w = blackman(seg.length), x = new Float64Array(seg.length);
+  for (let i = 0; i < seg.length; i++) x[i] = seg[i] * w[i];
+  const ft = rfftMag(x), k = pyRound(f * seg.length / Fs);
+  let m = 0;
+  for (let i = Math.max(0, k - 2); i < Math.min(ft.length, k + 3); i++) m = Math.max(m, ft[i]);
+  return m;
+}
+
+function percentil(vals, q) {
+  const s = Float64Array.from(vals).sort(), pos = (s.length - 1) * q / 100, lo = fl(pos);
+  return lo + 1 < s.length ? s[lo] + (s[lo + 1] - s[lo]) * (pos - lo) : s[lo];
+}
+
+function comparar(esperado, lido) {
+  let m = '';
+  for (let i = 0; i < esperado.length; i++) m += (i >= lido.length || lido[i] !== esperado[i]) ? '^' : ' ';
+  return m + (lido.length > esperado.length ? `  (+${lido.length - esperado.length} a mais)` : '');
+}
+
+// ---------------------------------------------------------------- analise
+
+async function analisar(audio, hex, c, mic, progresso) {
+  const Fs = c.Fs, CH = c.CHUNK, linhas = [], problemas = [];
+  const rel = (t = '') => linhas.push(t);
+  const p = passo(c), recuo = fl(0.20 * c.dur * Fs), largura = fl(0.60 * c.dur * Fs);
+  const preDados = fl(c.syncDur * Fs) + fl(c.MIDGAP * Fs);
+
+  rel(`DIAGNÓSTICO: ${fmt(audio.length / Fs)}s de áudio, ${c.versao}, perfil ${c.perfil} (sync ${c.syncDur}s @ ${c.fsync} Hz, FIM_SILENCIO ${c.FIM_SILENCIO}s)`);
+  rel(`Mensagem esperada (hex): ${hex}`);
+  if (audio.length < CH * 10) {
+    rel('[FALHA] Gravação curta demais para analisar.');
+    return { linhas, problemas: ['gravação curta demais'], acertos: 0, total: 0, canal: 0 };
+  }
+
+  if (mic) {
+    rel('\n0) MICROFONE NO NAVEGADOR');
+    rel(`   taxa do navegador: ${mic.taxa} Hz${mic.taxa !== Fs ? ` (reamostrado para ${Fs} Hz)` : ''}`);
+    const nomes = { echoCancellation: 'cancelamento de eco', noiseSuppression: 'supressão de ruído', autoGainControl: 'ganho automático' };
+    for (const [k, nome] of Object.entries(nomes)) {
+      const v = mic.settings[k];
+      if (v === true) {
+        rel(`   [ALERTA] o navegador manteve "${nome}" ligado: pode apagar ou deformar os tons`);
+        problemas.push(`${nome} ligado no microfone`);
+      } else if (v === false) rel(`   [OK]    ${nome} desligado`);
+      else rel(`   ${nome}: o navegador não informa`);
+    }
+  }
+
+  progresso('Procurando as transmissões na gravação...');
+  await tick();
+  const molde = gerarMolde(hex, c);
+  const trans = await localizarTransmissoes(audio, molde);
+
+  progresso('Rodando o receptor do jogo sobre a gravação...');
+  await tick();
+  const nb = fl(audio.length / CH), picos = new Float64Array(nb), dispara = new Uint8Array(nb), soRuido = new Uint8Array(nb).fill(1);
+  for (let b = 0; b < nb; b++) {
+    const bloco = audio.subarray(b * CH, (b + 1) * CH);
+    picos[b] = maxAbs(bloco);
+    dispara[b] = disparaSync(bloco, c) ? 1 : 0;
+  }
+  for (const [ini] of trans) {
+    const a = Math.max(0, ini - preDados - fl(0.3 * Fs)), z = ini + molde.length + fl(0.8 * Fs);
+    for (let b = fl(a / CH); b < nb && b * CH < z; b++) soRuido[b] = 0;
+  }
+  const idxRuido = [], idxSinal = [];
+  for (let b = 0; b < nb; b++) (soRuido[b] ? idxRuido : idxSinal).push(b);
+
+  // 1. nivel
+  rel('\n1) NÍVEL DO MICROFONE');
+  const p50 = idxRuido.length ? Math.trunc(percentil(idxRuido.map((b) => picos[b]), 50)) : null;
+  const p90 = idxRuido.length ? Math.trunc(percentil(idxRuido.map((b) => picos[b]), 90)) : null;
+  let clip = 0;
+  for (let i = 0; i < audio.length; i++) if (Math.abs(audio[i]) >= 32700) clip++;
+  if (p50 !== null) rel(`   ruído de fundo: pico típico ${p50}, pico p90 ${p90} (SILENCE_FLOOR do receptor = ${c.SILENCE_FLOOR})`);
+  if (trans.length) rel(`   pico durante as transmissões: ${Math.max(...idxSinal.map((b) => picos[b]))}`);
+  if (clip) {
+    rel(`   [ALERTA] ${clip} amostras saturadas (clipping): baixe o volume do emissor`);
+    problemas.push('clipping');
+  }
+
+  // 2. canal acustico
+  rel('\n2) CANAL ACÚSTICO (receptor ideal, alinhado por correlação)');
+  if (!trans.length) {
+    rel('   [FALHA] Nenhuma transmissão encontrada na gravação.');
+    rel('           O microfone não captou os tons: volume do emissor, microfone errado,');
+    rel('           permissão negada, ou supressão de ruído apagando o som.');
+    problemas.push('transmissão não captada');
+  }
+  let refRuido = null;
+  if (idxRuido.length) {
+    let k = idxRuido[0];
+    for (const b of idxRuido) if (picos[b] < picos[k]) k = b;
+    if (k * CH + largura <= audio.length) refRuido = audio.subarray(k * CH, k * CH + largura);
+  }
+  const snr = (seg, f) => refRuido === null ? Infinity
+    : 20 * Math.log10(Math.max(amplitudeEm(seg, f, Fs), 1e-9) / Math.max(amplitudeEm(refRuido, f, Fs), 1e-9));
+
+  const canalOk = [];
+  trans.forEach(([ini, ncc], t) => {
+    rel(`\n   Transmissão #${t + 1} em ${fmt(ini / Fs, 2)}s (dados), correlação ${fmt(ncc, 2)}`);
+    const s0 = ini - preDados, a0 = Math.max(0, s0) + fl(0.33 * c.syncDur * Fs), a1 = ini - fl(c.MIDGAP * Fs);
+    if (a1 - a0 > 256) rel(`   sync ${c.fsync} Hz: SNR ${fmt(Math.min(snr(audio.subarray(a0, a1), c.fsync), 99))} dB`);
+    // O receptor ideal le o pico so DENTRO da faixa dos dados. Em paralelo,
+    // anota o que o transfer_lib leria (pico do espectro inteiro).
+    let lidos = '', libLidos = '';
+    const fracos = [], mascarados = [];
+    const digito = (f) => { const v = pyRound((f - c.fbase) / c.step_hz); return v >= 0 && v <= 15 ? v.toString(16) : '?'; };
+    for (let k = 0; k < hex.length; k++) {
+      const a = ini + k * p + recuo;
+      if (a + largura > audio.length) break;
+      const seg = audio.subarray(a, a + largura), fEsp = c.fbase + c.step_hz * parseInt(hex[k], 16);
+      const fBanda = freqNaFaixa(seg, c), d = digito(fBanda);
+      const fLib = dominantFreq(seg, Fs);
+      const dLib = c.fbase - 500 < fLib && fLib < c.fbase + 16 * c.step_hz + 500 ? digito(fLib) : '?';
+      lidos += d; libLidos += dLib;
+      const s = snr(seg, fEsp);
+      if (d !== hex[k] || s < SNR_MINIMO_DB) fracos.push(`${hex[k]} (${fEsp} Hz): SNR ${s.toFixed(0)} dB, pico na faixa em ${fBanda.toFixed(0)} Hz, leu '${d}'`);
+      else if (dLib !== hex[k]) mascarados.push(`${hex[k]} (${fEsp} Hz): SNR ${s.toFixed(0)} dB, mas o pico do espectro inteiro está em ${fLib.toFixed(0)} Hz`);
+    }
+    rel(`   tons lidos: ${lidos}`);
+    rel(`               ${comparar(hex, lidos)}`);
+    fracos.forEach((f) => rel(`     - ${f}`));
+    const ok = lidos === hex;
+    canalOk.push(ok);
+    rel(ok ? '   [OK]    o canal entrega os 16 tons certos'
+           : '   [FALHA] o próprio som chega errado: problema de hardware ou ambiente');
+    if (mascarados.length) {
+      rel(`   [FALHA] mas o decodificador do transfer_lib leria: ${libLidos}`);
+      rel(`                                                     ${comparar(hex, libLidos)}`);
+      mascarados.forEach((m) => rel(`     - ${m}`));
+      rel('           Ele pega o maior pico do espectro INTEIRO, sem filtrar a faixa dos dados:');
+      rel('           um ruído fora da faixa (grave, vibração) mais forte que o tom vence.');
+      rel('           O som chegou certo; falta um filtro passa-faixa no software.');
+      problemas.push('ruído fora da faixa encobre os tons (falta filtro no decodificador)');
+    }
+  });
+
+  // 3. detector de sync
+  rel(`\n3) DETECTOR DE SYNC do transfer_lib (FFT por bloco, pico entre ${c.fsync - 300} e ${c.fsync + 300} Hz)`);
+  if (idxRuido.length) {
+    const falsos = idxRuido.reduce((n, b) => n + dispara[b], 0), pct = 100 * falsos / idxRuido.length;
+    rel(`   em trechos SEM transmissão, ${falsos}/${idxRuido.length} blocos (${pct.toFixed(0)}%) disparariam o sync`);
+    if (pct > 1) {
+      rel('   [FALHA] o detector confunde ruído ambiente com sync. Ele zera só até ~940 Hz');
+      rel('           e aceita o maior pico do bloco, sem exigir que ele se destaque do ruído');
+      rel('           nem que dure. Ruído de sala é mais forte nos graves, então o pico cai logo');
+      rel('           acima do corte, dentro da janela do sync, e a gravação começa na hora errada.');
+      problemas.push(`sync dispara com ruído (${pct.toFixed(0)}% dos blocos)`);
+    } else rel('   [OK]    ruído ambiente não dispara o sync');
+  }
+
+  // 4. fim
+  rel(`\n4) DETECÇÃO DE FIM (precisa de ${c.FIM_SILENCIO}s com todo bloco abaixo de ${c.SILENCE_FLOOR})`);
+  if (p50 !== null) {
+    if (p50 >= c.SILENCE_FLOOR) {
+      rel(`   [FALHA] o ruído de fundo (pico ${p50}) já passa do SILENCE_FLOOR: o receptor`);
+      rel(`           nunca vê silêncio e só para no teto de ${c.MAX_RECORD_S}s. Depois de um disparo`);
+      rel('           falso, a transmissão seguinte chega com ele ainda preso na gravação anterior.');
+      problemas.push('ruído acima do SILENCE_FLOOR: fim nunca detectado');
+    } else if (p90 >= c.SILENCE_FLOOR) {
+      rel(`   [ALERTA] o ruído às vezes passa do limiar (p90 = ${p90}): o fim pode demorar`);
+      problemas.push('ruído perto do SILENCE_FLOOR');
+    } else rel('   [OK]    ruído de fundo abaixo do limiar de silêncio');
+  }
+
+  // 5. receptor real
+  rel('\n5) RECEPTOR DO transfer_lib RODANDO SOBRE ESTA GRAVAÇÃO');
+  const sessoes = simularReceptor(audio, c, dispara, picos);
+  if (!sessoes.length) {
+    rel('   [FALHA] o detector de sync nunca disparou: nada seria gravado.');
+    problemas.push('sync nunca detectado');
+  }
+  const gravadas = new Set();
+  let acertos = 0, falsas = 0;
+  sessoes.forEach((s, n) => {
+    rel(`\n   Recepção #${n + 1}: gravou de ${fmt(s.ini / Fs, 2)}s a ${fmt(s.fim / Fs, 2)}s, parou por: ${s.motivo}`);
+    const dentro = [], cortadas = [];
+    trans.forEach(([ini], t) => {
+      if (s.ini <= ini && s.fim >= ini + molde.length) dentro.push(t);
+      else if (s.ini < ini + molde.length && s.fim > ini) cortadas.push(t);
+    });
+    cortadas.forEach((t) => rel(`   [FALHA] pegou só um pedaço da transmissão #${t + 1} (começou ou parou no meio)`));
+    if (!dentro.length) {
+      if (!cortadas.length) { falsas++; rel('   [FALHA] gravação disparada sem transmissão nenhuma dentro (disparo falso)'); }
+      if (s.hex) rel(`           decodificou lixo: '${s.hex}'`);
+      return;
+    }
+    if (dentro.length > 1) rel(`   [FALHA] uma única recepção engoliu ${dentro.length} transmissões (#${dentro.map((t) => t + 1).join(', #')}): no jogo, a segunda jogada se perderia`);
+    dentro.forEach((t) => gravadas.add(t));
+    const ini = trans[dentro[0]][0], adiant = (ini - preDados - s.ini) / Fs;
+    if (adiant > 0.2) rel(`   [ALERTA] começou a gravar ${fmt(adiant, 2)}s ANTES do sync real (disparo por ruído)`);
+    else if (adiant < -c.syncDur) rel(`   [FALHA] começou a gravar ${fmt(-adiant, 2)}s DEPOIS do início do sync`);
+    else rel(`   [OK]    sync detectado ${(-adiant * 1000 >= 0 ? '+' : '') + (-adiant * 1000).toFixed(0)} ms em relação ao início real`);
+    if (s.dataStart === null) rel('   [FALHA] find_data_start não achou o início dos dados');
+    else {
+      const erro = (s.ini + s.dataStart - ini) / Fs * 1000, passoMs = p / Fs * 1000;
+      const efetivo = ((((erro + passoMs / 2) % passoMs) + passoMs) % passoMs) - passoMs / 2;
+      const sinal = (v) => (v >= 0 ? '+' : '') + v.toFixed(0);
+      if (Math.abs(erro) <= TOLERANCIA_MS) rel(`   [OK]    find_data_start alinhou com erro de ${sinal(erro)} ms`);
+      else {
+        rel(`   [FALHA] find_data_start errou por ${sinal(erro)} ms`);
+        if (Math.abs(erro / 1000 + c.syncDur + c.MIDGAP) < 0.3) {
+          rel('           Ele devolveu o início do SYNC, não dos dados: um pico de ruído antes do');
+          rel("           sync foi tomado como 'sync', e o sync real como 'primeiro tom'.");
+        }
+        if (Math.abs(efetivo) <= TOLERANCIA_MS) {
+          rel(`           A grade de leitura (passo ${passoMs.toFixed(0)} ms) ainda cai nos tons por`);
+          rel(`           coincidência (${sinal(efetivo)} ms). Com outro perfil ou mais eco, erra.`);
+        } else {
+          rel(`           A grade de leitura fica ${sinal(efetivo)} ms fora do centro dos tons`);
+          rel(`           (margem segura ±${TOLERANCIA_MS} ms): acerta ou erra conforme o eco.`);
+        }
+        problemas.push('find_data_start desalinhado');
+      }
+    }
+    const esperado = hex.repeat(dentro.length);
+    rel(`   esperado: ${esperado}`);
+    rel(`   recebido: ${s.hex}`);
+    rel(`             ${comparar(esperado, s.hex)}`);
+    if (s.hex === esperado) { acertos += dentro.length; rel('   [OK]    MENSAGEM CORRETA'); }
+    else {
+      const culpa = dentro.every((t) => canalOk[t]) ? 'o som chegou certo, o erro é do receptor (etapas 3 a 5)'
+                                                    : 'o som já chegou errado (ver etapa 2)';
+      rel(`   [FALHA] MENSAGEM ERRADA: ${culpa}`);
+      problemas.push('mensagem decodificada errada');
+    }
+  });
+  trans.forEach(([ini], t) => {
+    if (!gravadas.has(t)) {
+      rel(`\n   [FALHA] Transmissão #${t + 1} (${fmt(ini / Fs, 2)}s) não foi recebida inteira: o receptor`);
+      rel('           estava ocupado com outra recepção ou não detectou o sync.');
+      problemas.push(`transmissão #${t + 1} perdida`);
+    }
+  });
+  if (falsas) {
+    rel(`\n   [FALHA] ${falsas} recepção(ões) falsa(s). No jogo, receber_texto() devolve a PRIMEIRA`);
+    rel("           recepção: um disparo falso antes da jogada vira 'resposta ininteligível'");
+    rel('           e a jogada de verdade toca para ninguém.');
+    problemas.push(`${falsas} recepção(ões) falsa(s): no jogo, jogada perdida`);
+  }
+
+  const canal = canalOk.filter(Boolean).length;
+  rel('\n' + '='.repeat(60));
+  rel(`RESULTADO: ${acertos}/${trans.length} decodificadas certo pelo receptor do jogo`);
+  rel(`           ${canal}/${trans.length} chegaram certas no receptor ideal`);
+  const unicos = [...new Set(problemas)];
+  if (unicos.length) { rel('Causas encontradas:'); unicos.forEach((pr) => rel(`  - ${pr}`)); }
+  else if (trans.length && acertos === trans.length) rel('Tudo certo neste teste.');
+  return { linhas, problemas: unicos, acertos, total: trans.length, canal };
+}
+
+// ------------------------------------------------------------ apresentacao
+
+let ultimo = null;   // { audio, texto } da ultima analise, para os downloads
+
+function mostrarResultado(r, audio) {
+  const texto = r.linhas.join('\n');
+  ultimo = { audio, texto };
+  const rel = $('#relatorio');
+  rel.textContent = '';
+  for (const l of r.linhas) {
+    const div = document.createElement('div');
+    div.textContent = l || ' ';
+    if (l.includes('[OK]')) div.className = 'ok';
+    else if (l.includes('[FALHA]')) div.className = 'fail';
+    else if (l.includes('[ALERTA]')) div.className = 'warn';
+    else if (/^\d\)|^RESULTADO|^DIAGN/.test(l.trim())) div.className = 'h';
+    rel.appendChild(div);
+  }
+  const res = $('#resumo');
+  const tudoOk = r.total > 0 && r.acertos === r.total && !r.problemas.length;
+  res.className = 'card summary ' + (tudoOk ? 'good' : 'bad');
+  res.textContent = '';
+  const h = document.createElement('h2');
+  h.textContent = r.total === 0 ? 'Nenhuma transmissão encontrada'
+    : tudoOk ? 'Funcionou' : `${r.acertos} de ${r.total} transmissões decodificadas certo`;
+  res.appendChild(h);
+  const pe = document.createElement('div');
+  pe.textContent = r.total === 0
+    ? 'O microfone não captou os tons. Confira o volume do emissor e a permissão do microfone.'
+    : r.canal === r.total
+      ? `O som chegou certo nas ${r.total} (receptor ideal). O que falhar daqui para baixo é do software do receptor.`
+      : `Só ${r.canal} de ${r.total} chegaram certas mesmo com o receptor ideal: há problema no canal de som.`;
+  res.appendChild(pe);
+  if (r.problemas.length) {
+    const ul = document.createElement('ul');
+    r.problemas.forEach((p) => { const li = document.createElement('li'); li.textContent = p; ul.appendChild(li); });
+    res.appendChild(ul);
+  }
+  $('#btn-baixar-wav').hidden = !audio;
+  $('#resultado').hidden = false;
+  $('#resultado').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function baixar(blob, nome) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = nome;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+function wavBlob(audio, Fs) {
+  const n = audio.length, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+  const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  str(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); str(8, 'WAVE'); str(12, 'fmt ');
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, Fs, true); v.setUint32(28, Fs * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  str(36, 'data'); v.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) v.setInt16(44 + i * 2, audio[i], true);
+  return new Blob([buf], { type: 'audio/wav' });
+}
+
+const carimbo = () => new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '').replace(/^(\d{8})/, '$1_');
+
+$('#btn-copiar').onclick = async () => {
+  try { await navigator.clipboard.writeText(ultimo.texto); $('#btn-copiar').textContent = 'Copiado'; }
+  catch { $('#btn-copiar').textContent = 'Não deu para copiar'; }
+  setTimeout(() => { $('#btn-copiar').textContent = 'Copiar relatório'; }, 2000);
+};
+$('#btn-baixar-rel').onclick = () => baixar(new Blob([ultimo.texto + '\n'], { type: 'text/plain' }), `relatorio_${carimbo()}.txt`);
+$('#btn-baixar-wav').onclick = () => ultimo.audio && baixar(wavBlob(ultimo.audio, BASE.Fs), `gravacao_${carimbo()}.wav`);
+
+// ------------------------------------------------------------------ abas
+
+document.querySelectorAll('.tabs button').forEach((b) => {
+  b.onclick = () => {
+    document.querySelectorAll('.tabs button').forEach((o) => o.setAttribute('aria-selected', o === b));
+    ['emitir', 'receber', 'arquivo'].forEach((t) => { $('#tab-' + t).hidden = t !== b.dataset.tab; });
+  };
+});
+
+let wakeLock = null;
+async function manterTelaLigada(ligar) {
+  try {
+    if (ligar && 'wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen');
+    else if (!ligar && wakeLock) { await wakeLock.release(); wakeLock = null; }
+  } catch { /* opcional: alguns navegadores nao tem */ }
+}
+
+const novoContexto = () => new (window.AudioContext || window.webkitAudioContext)();
+
+// ----------------------------------------------------------------- emitir
+
+let emissao = null;
+$('#btn-emitir').onclick = async () => {
+  if (emissao) { emissao.parar(); return; }
+  const c = cfg(), reps = Math.max(1, +$('#reps').value || 1), intervalo = Math.max(0, +$('#intervalo').value || 0);
+  const ctx = novoContexto();
+  await ctx.resume();
+  const sr = ctx.sampleRate;
+  if (c.fbase + 15 * c.step_hz >= sr / 2) {
+    $('#st-emitir').innerHTML = `<span class="err">Este aparelho toca a ${sr} Hz e não consegue gerar tons de ${c.fbase + 1500} Hz.</span>`;
+    ctx.close();
+    return;
+  }
+  const sig = normalizar(gerarSinal(HEX_TESTE, c, sr)), ganho = $('#volmax').checked ? 32767 / 18000 : 1;
+  const buf = ctx.createBuffer(1, sig.length, sr), ch = buf.getChannelData(0);
+  for (let i = 0; i < sig.length; i++) ch[i] = sig[i] / 32768 * ganho;
+  const durS = sig.length / sr, t0 = ctx.currentTime + 0.3, fontes = [];
+  for (let r = 0; r < reps; r++) {
+    const s = ctx.createBufferSource();
+    s.buffer = buf; s.connect(ctx.destination); s.start(t0 + r * (durS + intervalo));
+    fontes.push(s);
+  }
+  const fimTotal = t0 + reps * durS + (reps - 1) * intervalo;
+  manterTelaLigada(true);
+  $('#btn-emitir').textContent = 'Parar';
+  const timer = setInterval(() => {
+    const t = ctx.currentTime - t0;
+    if (t >= fimTotal - t0) return emissao && emissao.parar(true);
+    const r = Math.min(reps - 1, fl(t / (durS + intervalo))), dentro = t - r * (durS + intervalo);
+    $('#st-emitir').textContent = dentro < durS
+      ? `Tocando a transmissão ${r + 1} de ${reps} (${fmt(dentro)} de ${fmt(durS)} s)`
+      : `Pausa antes da transmissão ${r + 2} de ${reps}`;
+  }, 200);
+  emissao = {
+    parar(terminou) {
+      clearInterval(timer);
+      fontes.forEach((s) => { try { s.stop(); } catch {} });
+      ctx.close();
+      manterTelaLigada(false);
+      emissao = null;
+      $('#btn-emitir').textContent = 'Tocar mensagem de teste';
+      $('#st-emitir').textContent = terminou ? 'Fim. Pare a gravação no outro aparelho para ver o relatório.' : 'Interrompido.';
+    },
+  };
+};
+
+// ---------------------------------------------------------------- receber
+
+async function para48k(f32, sr) {
+  if (sr === BASE.Fs) return f32;
+  const oc = new OfflineAudioContext(1, Math.ceil(f32.length * BASE.Fs / sr), BASE.Fs);
+  const b = oc.createBuffer(1, f32.length, sr);
+  b.copyToChannel(f32, 0);
+  const s = oc.createBufferSource();
+  s.buffer = b; s.connect(oc.destination); s.start();
+  return (await oc.startRendering()).getChannelData(0);
+}
+
+function paraInt16(f32) {
+  const o = new Float64Array(f32.length);
+  for (let i = 0; i < f32.length; i++) o[i] = Math.max(-32768, Math.min(32767, Math.round(f32[i] * 32768)));
+  return o;
+}
+
+function desenharEspectro(bloco, sr, c) {
+  const cv = $('#espectro'), g = cv.getContext('2d'), css = getComputedStyle(document.documentElement);
+  const W = cv.width = cv.clientWidth * devicePixelRatio, H = cv.height = cv.clientHeight * devicePixelRatio;
+  const f0 = c.versao === 'v3' ? 15000 : 0, f1 = Math.min(sr / 2, c.versao === 'v3' ? 23000 : 5000);
+  const xDe = (f) => (f - f0) / (f1 - f0) * W;
+  g.clearRect(0, 0, W, H);
+  g.fillStyle = css.getPropertyValue('--band');
+  g.fillRect(xDe(c.fsync - 300), 0, xDe(c.fsync + 300) - xDe(c.fsync - 300), H);
+  g.fillRect(xDe(c.fbase), 0, xDe(c.fbase + 1500) - xDe(c.fbase), H);
+  const mag = rfftMag(bloco), N = bloco.length;
+  g.strokeStyle = css.getPropertyValue('--meter');
+  g.lineWidth = 1.5 * devicePixelRatio;
+  g.beginPath();
+  for (let k = Math.ceil(f0 * N / sr); k < mag.length && k * sr / N <= f1; k++) {
+    const db = 20 * Math.log10(mag[k] / N + 1e-9), y = H - Math.max(0, Math.min(1, (db + 100) / 90)) * H;
+    const x = xDe(k * sr / N);
+    k === Math.ceil(f0 * N / sr) ? g.moveTo(x, y) : g.lineTo(x, y);
+  }
+  g.stroke();
+}
+
+let gravacao = null;
+$('#btn-gravar').onclick = async () => {
+  const st = $('#st-receber');
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    st.innerHTML = '<span class="err">O navegador só libera o microfone em páginas HTTPS (ou localhost). Abra esta página pelo link https.</span>';
+    return;
+  }
+  const c = cfg();
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 },
+    });
+  } catch (e) {
+    st.innerHTML = `<span class="err">Sem acesso ao microfone (${e.name}). Libere a permissão no navegador e tente de novo.</span>`;
+    return;
+  }
+  const ctx = novoContexto();
+  await ctx.resume();
+  const sr = ctx.sampleRate, src = ctx.createMediaStreamSource(stream);
+  const proc = ctx.createScriptProcessor(4096, 1, 1), mudo = ctx.createGain();
+  mudo.gain.value = 0;
+  src.connect(proc); proc.connect(mudo); mudo.connect(ctx.destination);
+  const blocos = [], maxN = (+$('#duracao').value || 60) * sr;
+  let n = 0, recente = null;
+  proc.onaudioprocess = (e) => {
+    const d = new Float32Array(e.inputBuffer.getChannelData(0));
+    blocos.push(d); n += d.length; recente = d;
+    if (n >= maxN && gravacao) gravacao.parar();
+  };
+  const settings = stream.getAudioTracks()[0].getSettings ? stream.getAudioTracks()[0].getSettings() : {};
+  $('#medidor').hidden = false;
+  $('#legenda').textContent = `Faixas destacadas: sync (${c.fsync} Hz) e dados (${c.fbase} a ${c.fbase + 1500} Hz).`;
+  $('#btn-gravar').disabled = true;
+  $('#btn-parar').disabled = false;
+  st.textContent = 'Gravando. Pode tocar no outro aparelho.';
+  manterTelaLigada(true);
+  const timer = setInterval(() => {
+    $('#m-tempo').textContent = fmt(n / sr) + ' s';
+    if (!recente) return;
+    $('#m-pico').textContent = Math.round(maxAbs(recente) * 32768);
+    const mag = rfftMag(recente);
+    for (let k = 0; k < 10; k++) mag[k] = 0;
+    $('#m-freq').textContent = Math.round(argmax(mag) * sr / recente.length) + ' Hz';
+    desenharEspectro(recente, sr, c);
+  }, 200);
+
+  gravacao = {
+    async parar() {
+      gravacao = null;
+      clearInterval(timer);
+      proc.onaudioprocess = null;
+      proc.disconnect(); src.disconnect();
+      stream.getTracks().forEach((t) => t.stop());
+      await ctx.close();
+      manterTelaLigada(false);
+      $('#btn-parar').disabled = true;
+      const bruto = new Float32Array(n);
+      let o = 0;
+      for (const b of blocos) { bruto.set(b, o); o += b.length; }
+      st.textContent = 'Analisando...';
+      try {
+        const audio = paraInt16(await para48k(bruto, sr));
+        const r = await analisar(audio, HEX_TESTE, c, { taxa: sr, settings }, (m) => { st.textContent = m; });
+        st.textContent = `Gravação de ${fmt(audio.length / BASE.Fs)} s analisada.`;
+        mostrarResultado(r, audio);
+      } catch (e) {
+        st.innerHTML = `<span class="err">Erro na análise: ${e.message}</span>`;
+      }
+      $('#btn-gravar').disabled = false;
+    },
+  };
+};
+$('#btn-parar').onclick = () => gravacao && gravacao.parar();
+
+// ---------------------------------------------------------------- arquivo
+
+async function audioDeArrayBuffer(ab) {
+  // Decodificar num contexto de 48 kHz ja reamostra para a taxa do protocolo.
+  const oc = new OfflineAudioContext(1, 1, BASE.Fs);
+  const buf = await oc.decodeAudioData(ab);
+  return paraInt16(buf.getChannelData(0));
+}
+
+async function analisarArrayBuffer(ab, progresso = () => {}) {
+  const audio = await audioDeArrayBuffer(ab);
+  return { r: await analisar(audio, HEX_TESTE, cfg(), null, progresso), audio };
+}
+
+$('#arquivo').onchange = () => { $('#btn-arquivo').disabled = !$('#arquivo').files.length; };
+$('#btn-arquivo').onclick = async () => {
+  const st = $('#st-arquivo'), f = $('#arquivo').files[0];
+  st.textContent = 'Lendo o arquivo...';
+  try {
+    const { r, audio } = await analisarArrayBuffer(await f.arrayBuffer(), (m) => { st.textContent = m; });
+    st.textContent = `${f.name}: ${fmt(audio.length / BASE.Fs)} s analisados.`;
+    mostrarResultado(r, null);
+  } catch (e) {
+    st.innerHTML = `<span class="err">Não consegui ler esse arquivo: ${e.message}</span>`;
+  }
+};
+</script>
+</body>
+</html>

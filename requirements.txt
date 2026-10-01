@@ -1,4 +1,4 @@
-# Dependencias da v4 (versao recomendada - veja v4/README.md).
+# Dependencias da v5 (versao recomendada - veja v5/README.md; a v4 usa as mesmas).
 # sounddevice so e necessario para o modo de audio real (--audio / --ouvir);
 # o modo padrao (loopback) roda so com numpy e scipy.
 numpy
