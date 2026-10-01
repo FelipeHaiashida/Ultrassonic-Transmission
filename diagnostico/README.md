@@ -63,24 +63,20 @@ A mensagem de teste é o hex `0123456789abcdef`, que passa pelos 16 tons.
 A regra de leitura: **se a etapa 2 passa e a 5 falha, o som chegou certo e o
 problema é o software do receptor**. Se a 2 já falha, é o canal físico.
 
-## O que as simulações já mostram
+## O que o diagnóstico encontrou (e já foi corrigido na v4)
 
-Rodando `simular` com ruído rosa realista (pico ~150–250 em int16, comum em
-microfone de notebook), o receptor ideal decodifica 100% das transmissões,
-mas o receptor do `transfer_lib` (v4) tem três problemas:
+No primeiro teste real entre dois PCs, o som chegou certo (o receptor ideal
+decodificou 2 de 2), mas o receptor antigo do `transfer_lib` acertou 0 de 2:
 
-1. **O detector de sync dispara com ruído.** Ele zera só até ~940 Hz e aceita o
-   maior pico do bloco, sem exigir que se destaque do ruído. Ruído de sala é
-   mais forte nos graves, então o pico cai logo acima do corte — dentro da
-   janela do sync (700–1300 Hz). Cerca de metade dos blocos de puro ruído
-   dispara. No jogo, `receber_texto()` devolve a primeira recepção, então um
-   disparo falso vira "jogada perdida".
-2. **`SILENCE_FLOOR = 150` é baixo demais** para muitos microfones: se o ruído
-   de fundo passa disso, o receptor nunca vê silêncio e só para no teto de
-   30 s, engolindo a transmissão seguinte.
-3. **`find_data_start` pode devolver o início do sync em vez dos dados** quando
-   a gravação começa antes do sync (por causa do item 1). No perfil `padrao`
-   isso é mascarado por coincidência: sync + midgap = 2,0 s = exatamente 5
-   passos de tom, então a grade de leitura ainda cai nos tons.
+1. **O detector de sync disparava com ruído**: 61% dos blocos de puro ruído
+   de sala eram tomados por sync.
+2. **`SILENCE_FLOOR = 150` fixo**: o ruído de fundo (pico ~3800) nunca ficava
+   abaixo disso, e cada recepção só parava no teto de 30 s, engolindo a
+   transmissão seguinte.
+3. **O decodificador pegava o maior pico do espectro inteiro**: uma vibração em
+   ~13 Hz, mais forte que os tons, fez 6 de 32 dígitos virarem lixo.
 
-A v3 (19 kHz) não sofre do item 1 com ruído de sala, mas sofre do item 2.
+O receptor da v4 foi reescrito para usar proeminência local em vez de limiares
+fixos (detalhes em [`../v4/README.md`](../v4/README.md#decodificação)). Na
+mesma gravação, ele acerta 2 de 2. A **v3 ainda tem o receptor antigo** e, com
+`--versao v3`, esta ferramenta continua mostrando esses três problemas.

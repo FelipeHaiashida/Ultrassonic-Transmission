@@ -25,8 +25,12 @@ montar a cerimonia de dois computadores.
 """
 
 import binascii
+from collections import deque
+
 import numpy as np
 from scipy.io import wavfile
+from scipy.ndimage import median_filter
+from scipy.signal import butter, sosfiltfilt
 
 # --- Parametros do canal ---
 dur      = 0.25     # duracao de cada tom de dado
@@ -44,9 +48,19 @@ FADE_IN  = 0.5      # teto da rampa de entrada do sync
 FIM_SILENCIO = 2.5  # silencio continuo que encerra a recepcao
 
 AMPLITUDE     = 30
-SILENCE_FLOOR = 150     # limiar bruto de silencio, em int16
 CHUNK         = 1024    # tamanho do bloco de leitura do microfone
 MAX_RECORD_S  = 30      # teto de gravacao, em segundos
+
+# Deteccao de tom. Nada aqui e um limiar de volume fixo: um limiar fixo (a
+# versao anterior usava 150 em int16) quebra em qualquer sala cujo ruido de
+# fundo passe dele - medido num teste real entre dois PCs, o ruido estava em
+# ~3800. Em vez disso, um tom e reconhecido por se DESTACAR do resto da faixa
+# do protocolo, o que vale para qualquer volume e qualquer ruido de fundo.
+PROEMINENCIA = 6.0      # pico / mediana da faixa para contar como tom (~16 dB)
+TOM_MINIMO   = 30       # amplitude minima (int16) - so separa tom de silencio digital
+SYNC_MIN_S   = 0.25     # o sync precisa se sustentar por isso (ate 40% de syncDur)
+PRE_ROLL_S   = 0.3      # audio anterior ao sync que entra na gravacao
+JANELA_RUIDO_HZ = 800   # vizinhanca usada para medir o ruido em volta de um pico
 
 
 # Perfis de temporizacao. O preambulo (warmup + sync + midgap + cooldown) e
@@ -169,6 +183,12 @@ def _envelope(signal, win=256):
     return blocos.max(axis=1), win
 
 
+def _filtrar(signal, lo, hi):
+    """Passa-faixa de fase zero (nao desloca o sinal no tempo)."""
+    sos = butter(6, [lo, hi], btype='bandpass', fs=Fs, output='sos')
+    return sosfiltfilt(sos, signal)
+
+
 def find_data_start(signal):
     """Devolve o indice do primeiro tom de dado.
 
@@ -176,42 +196,124 @@ def find_data_start(signal):
         [silencio] -> [sync tocando] -> [silencio] -> [primeiro tom de dado]
                                                        ^ retorna aqui
 
-    A versao anterior assumia um offset fixo de 2.0s depois do sync. Isso so
-    funcionava se a deteccao do sync caisse exatamente no inicio do tom - e
-    qualquer desvio de dezenas de milissegundos desalinhava todos os tons
-    seguintes. Procurar o inicio real resolve isso.
+    Cada etapa olha so a sua faixa de frequencia: o sync numa faixa estreita
+    em volta de fsync, os dados na faixa dos digitos. A versao anterior
+    olhava a amplitude bruta, e qualquer ruido grave da sala (ventoinha,
+    vibracao da mesa) mais alto que o limiar era tomado por sync ou por tom -
+    num teste real ela devolvia o inicio do sync em vez do inicio dos dados.
+
+    Os limiares sao relativos ao ruido medido no proprio buffer (percentil
+    10 do envelope de cada faixa), nao a um valor fixo.
     """
-    env, win = _envelope(signal)
-    if len(env) == 0:
+    signal = np.asarray(signal, dtype=np.float64)
+    if len(signal) < CHUNK or not np.any(signal):
         return None
 
-    pico = env.max()
-    if pico <= 0:
+    env_s, win = _envelope(_filtrar(signal, fsync - 60, fsync + 60))
+    env_d, _ = _envelope(_filtrar(signal, fbase - 150, fbase + 15 * step_hz + 150))
+    n = len(env_s)
+
+    # 1. o sync: o primeiro trecho em que a faixa do sync fica alta por pelo
+    # menos 30% de syncDur. Nao o pico maximo - um estalo ou uma rajada de
+    # ruido pode ser mais forte que o sync e esta em outro lugar.
+    ruido_s, pico_s = np.percentile(env_s, 10), env_s.max()
+    if pico_s < max(TOM_MINIMO, 4 * ruido_s):
         return None
+    alto_s = env_s >= ruido_s + 0.3 * (pico_s - ruido_s)
+    minimo = max(1, int(0.3 * syncDur * Fs / win))
+    i, fim_sync = 0, None
+    while i < n:
+        if not alto_s[i]:
+            i += 1
+            continue
+        j = i
+        while j < n and alto_s[j]:
+            j += 1
+        if j - i >= minimo:
+            fim_sync = j
+            break
+        i = j
+    if fim_sync is None or fim_sync >= n:
+        return None
+    i = fim_sync
 
-    alto = max(SILENCE_FLOOR, 0.10 * pico)
-    baixo = max(SILENCE_FLOOR, 0.02 * pico)
-    n, i = len(env), 0
-
-    while i < n and env[i] < alto:   # 1. espera o sync ficar audivel
-        i += 1
-    while i < n and env[i] >= alto:  # 2. espera o sync acabar
-        i += 1
-    while i < n and env[i] < alto:   # 3. espera o primeiro tom de dado
+    # 2. o primeiro tom de dado depois do sync
+    ruido_d, pico_d = np.percentile(env_d, 10), env_d[fim_sync:].max()
+    if pico_d < max(TOM_MINIMO, 4 * ruido_d):
+        return None
+    alto = ruido_d + 0.10 * (pico_d - ruido_d)
+    baixo = ruido_d + 0.02 * (pico_d - ruido_d)
+    while i < n and env_d[i] < alto:
         i += 1
     if i >= n:
         return None
 
     # A janela Blackman faz o tom subir devagar, entao o cruzamento do limiar
     # acontece depois do inicio real. Recua ate o pe da subida.
-    while i > 0 and env[i - 1] >= baixo:
+    while i > fim_sync and env_d[i - 1] >= baixo:
         i -= 1
+
+    # 3. Refina pela grade inteira. Com ruido alto, o limiar pode cruzar num
+    # pico de ruido antes do primeiro tom; somar a energia de TODOS os tons
+    # para cada deslocamento candidato acha o alinhamento mesmo assim. Se o
+    # limiar caiu longe de onde os dados deveriam estar (fim do sync +
+    # MIDGAP), a busca parte da posicao prevista.
+    passo_w = int(round((dur + gap) * Fs / win))
+    tom_w = int(round(dur * Fs / win))
+    previsto = fim_sync + int(round(MIDGAP * Fs / win))
+    centro = i if abs(i - previsto) <= passo_w // 2 else previsto
+    lo, hi = max(fim_sync, centro - passo_w // 2), centro + passo_w // 2
+    tons = (n - hi - tom_w) // passo_w + 1
+    if tons >= 1 and hi > lo:
+        acum = np.concatenate(([0.0], np.cumsum(env_d ** 2)))
+        inicios = np.arange(lo, hi)[:, None] + passo_w * np.arange(tons)[None, :]
+        energia = (acum[inicios + tom_w] - acum[inicios]).sum(axis=1)
+        i = lo + int(np.argmax(energia))
     return i * win
 
 
 def dominant_freq(segment):
+    """Frequencia do maior pico do espectro inteiro. Mantida por
+    compatibilidade - o decodificador usa _tom_na_faixa."""
     ft = np.abs(np.fft.rfft(segment * np.blackman(len(segment))))
     return np.argmax(ft) * Fs / len(segment)
+
+
+def _proeminencia(amp, k0, k1, n):
+    """(indice, amplitude, proeminencia) do pico mais destacado em amp[k0:k1].
+
+    Proeminencia = amplitude / mediana dos vizinhos (JANELA_RUIDO_HZ em volta).
+    Tem que ser LOCAL: ruido de sala nao e plano, e num teste real ele era
+    ~20 dB mais forte em 700-1100 Hz do que em 3 kHz. Comparado com a mediana
+    da faixa inteira, esse ruido parecia um tom.
+    """
+    lado = max(8, int(JANELA_RUIDO_HZ / 2 * n / Fs))
+    a0, a1 = max(0, k0 - lado), min(len(amp), k1 + lado)
+    trecho = amp[a0:a1]
+    ref = median_filter(trecho, size=2 * lado + 1, mode='nearest')[k0 - a0:k1 - a0]
+    faixa = amp[k0:k1]
+    with np.errstate(divide='ignore', invalid='ignore'):
+        prom = np.where(ref > 0, faixa / np.where(ref > 0, ref, 1), np.where(faixa > 0, np.inf, 0.0))
+    k = int(np.argmax(prom))
+    return k0 + k, faixa[k], prom[k]
+
+
+def _tom_na_faixa(segment):
+    """(frequencia, amplitude, proeminencia) do maior pico DENTRO da faixa
+    dos dados.
+
+    A versao anterior pegava o maior pico do espectro inteiro. Num teste real
+    entre dois PCs, a vibracao do alto-falante na mesa gerava um componente em
+    ~13 Hz mais forte que os tons, e 6 de 32 digitos foram lidos como lixo
+    mesmo com o tom chegando 40-60 dB acima do ruido.
+    """
+    n = len(segment)
+    w = np.blackman(n)
+    amp = np.abs(np.fft.rfft(segment * w)) * 2 / w.sum()
+    k0 = int(np.ceil((fbase - step_hz) * n / Fs))
+    k1 = int((fbase + 16 * step_hz) * n / Fs) + 1
+    k, pico, prom = _proeminencia(amp, k0, k1, n)
+    return k * Fs / n, pico, prom
 
 
 # ------------------------------------------------------------ decodificacao
@@ -233,25 +335,21 @@ def signal_to_hex(signal, verbose=False):
     recuo = int(0.20 * dur * Fs)
     largura = int(0.60 * dur * Fs)
 
-    pico = np.max(np.abs(signal))
-    limiar = max(SILENCE_FLOOR, 0.05 * pico)
-
-    digitos, k = [], 0
-    while True:
+    leituras = []
+    for k in range((len(signal) - inicio - recuo - largura) // passo + 1):
         a = inicio + k * passo + recuo
-        b = a + largura
-        k += 1
-        if b > len(signal):
-            break
+        leituras.append(_tom_na_faixa(signal[a:a + largura]))
 
-        seg = signal[a:b]
-        if np.max(np.abs(seg)) < limiar:
+    # Uma janela so conta como digito se tiver um tom que se destaca na faixa.
+    # O corte de amplitude e relativo ao tom mais forte (-30 dB), para pular
+    # o silencio depois da mensagem sem depender do volume da gravacao.
+    fortes = [amp for _, amp, prom in leituras if prom >= PROEMINENCIA]
+    corte = max(TOM_MINIMO, 0.03 * max(fortes)) if fortes else np.inf
+
+    digitos = []
+    for freq, amp, prom in leituras:
+        if prom < PROEMINENCIA or amp < corte:
             continue
-
-        freq = dominant_freq(seg)
-        if not (fbase - 500 < freq < fbase + 16 * step_hz + 500):
-            continue
-
         val = int(round((freq - fbase) / step_hz))
         if 0 <= val <= 15:
             digitos.append(format(val, 'x'))
@@ -285,45 +383,99 @@ def writeSignalToFile(signal, outputFile='decoded_out'):
 
 # ------------------------------------------------------------------ canal
 
-def _coletar(blocos, verbose=True, max_s=MAX_RECORD_S):
+_JANELAS = {}
+
+
+def analisar_bloco(bloco):
+    """Classifica um bloco do microfone: (tem_tom, eh_sync, freq_do_pico).
+
+    tem_tom: algum tom se destaca na faixa do protocolo (sync ate o digito f).
+    eh_sync: e o tom mais forte da faixa esta na frequencia do sync.
+
+    Graves abaixo da faixa (ventoinha, vibracao, ruido de manuseio) ficam de
+    fora por construcao. A versao anterior aceitava o maior pico acima de
+    ~940 Hz sem exigir que ele se destacasse, e ruido de sala comum - mais
+    forte nos graves - tinha o pico logo ali: num teste real, 61% dos blocos
+    de puro ruido eram tomados por sync.
+    """
+    bloco = np.asarray(bloco, dtype=np.float64)
+    n = len(bloco)
+    w = _JANELAS.get(n)
+    if w is None:
+        w = _JANELAS[n] = np.hanning(n)
+    amp = np.abs(np.fft.rfft(bloco * w)) * 2 / w.sum()
+    k0 = int(np.ceil(max(50, fsync - 300) * n / Fs))
+    k1 = min(len(amp), int((fbase + 16 * step_hz + 300) * n / Fs) + 1)
+    k, pico, prom = _proeminencia(amp, k0, k1, n)
+    freq = k * Fs / n
+    tem_tom = pico >= TOM_MINIMO and prom >= PROEMINENCIA
+    eh_sync = tem_tom and abs(freq - fsync) <= 2 * Fs / n
+    return tem_tom, eh_sync, freq
+
+
+def _coletar(blocos, verbose=True, max_s=MAX_RECORD_S, info=None):
     """Nucleo do receptor: espera o sync, acumula ate o silencio final.
 
     Recebe um iteravel de blocos de int16 - venham eles do microfone ou de
     um array em memoria. E o que permite que gravar() e loopback() exercitem
     exatamente o mesmo caminho de codigo.
 
+    O sync so conta depois de se sustentar por SYNC_MIN_S: um bloco isolado
+    (uma palavra, um estalo) nao dispara a gravacao. Como a confirmacao chega
+    atrasada, os blocos anteriores (PRE_ROLL_S) entram na gravacao, para que
+    o inicio do sync nao se perca.
+
+    "Silencio", para o fim da recepcao, e a ausencia de tom do protocolo - nao
+    amplitude baixa. Assim o ruido de fundo da sala, por mais alto que seja,
+    nao impede a recepcao de terminar.
+
     max_s e uma valvula de seguranca: no microfone, impede gravar para sempre
     se a transmissao nunca terminar. Ela tambem limita o payload maximo a
     cerca de 35 bytes por transmissao no valor padrao - suba se precisar de
     mensagens maiores.
+
+    info: se for um dict, recebe ini/fim (em amostras desde o primeiro bloco)
+    e o motivo de parada. Usado pela ferramenta de diagnostico.
     """
-    coletado, gravando, silencio = [], False, 0
-    total = 0
+    n_sync = max(1, int(round(min(SYNC_MIN_S, 0.4 * syncDur) * Fs / CHUNK)))
+    historico = deque(maxlen=n_sync + int(PRE_ROLL_S * Fs / CHUNK))
     limite_silencio = (Fs / CHUNK) * FIM_SILENCIO
+    coletado, gravando, silencio, seguidos = [], False, 0, 0
+    total = lidas = 0
+    ini, motivo = None, 'fim do audio'
 
     for bloco in blocos:
+        lidas += len(bloco)
+        tem_tom, eh_sync, freq = analisar_bloco(bloco)
+
         if not gravando:
-            ft = np.abs(np.fft.rfft(bloco))
-            ft[:20] = 0
-            pico_hz = np.argmax(ft) * Fs / len(bloco)
-            if fsync - 300 < pico_hz < fsync + 300:
+            historico.append(bloco)
+            seguidos = seguidos + 1 if eh_sync else 0
+            if seguidos >= n_sync:
                 gravando = True
+                coletado = list(historico)
+                total = sum(len(b) for b in coletado)
+                ini = lidas - total
                 if verbose:
-                    print(f"--> Sincronia detectada ({int(pico_hz)} Hz)")
+                    print(f"--> Sincronia detectada ({int(freq)} Hz)")
+            continue
 
-        if gravando:
-            coletado.append(bloco)
-            total += len(bloco)
-            if total > max_s * Fs:
-                if verbose:
-                    print(f"Teto de {max_s}s atingido - o resto foi truncado.")
-                break
-            silencio = silencio + 1 if np.max(np.abs(bloco)) < SILENCE_FLOOR else 0
-            if silencio > limite_silencio:
-                if verbose:
-                    print("Fim da transmissao.")
-                break
+        coletado.append(bloco)
+        total += len(bloco)
+        if total > max_s * Fs:
+            motivo = f'teto de {max_s}s'
+            if verbose:
+                print(f"Teto de {max_s}s atingido - o resto foi truncado.")
+            break
+        silencio = 0 if tem_tom else silencio + 1
+        if silencio > limite_silencio:
+            motivo = 'silencio final'
+            if verbose:
+                print("Fim da transmissao.")
+            break
 
+    if info is not None:
+        info.update(ini=ini, fim=lidas, motivo=motivo if gravando else 'sync nao detectado')
     return np.concatenate(coletado) if coletado else np.zeros(0)
 
 

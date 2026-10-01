@@ -1,7 +1,9 @@
 # Ultrassonic Transmission — v4 (faixa audível para testes)
 
-Mesmo protocolo da v3, com uma única mudança: a faixa de frequência caiu de
-quase-ultrassônica (19–21,5 kHz) para **audível de propósito (1–3,5 kHz)**.
+Mesmo protocolo da v3, com duas mudanças: a faixa de frequência caiu de
+quase-ultrassônica (19–21,5 kHz) para **audível de propósito (1–3,5 kHz)**, e o
+receptor foi reescrito para funcionar em sala de verdade, com ruído de fundo
+(veja [Decodificação](#decodificação)).
 
 ## Por que
 
@@ -21,8 +23,10 @@ testar em hardware de verdade — o objetivo desta versão.
 pessoa por perto, não só ao par emissor/receptor. Se o objetivo for
 transmissão discreta, use a v3.
 
-Tudo o mais é herdado da v3 sem alteração: loopback, alinhamento dinâmico,
-Batalha Naval, `sounddevice` opcional.
+O formato do sinal, o loopback, a Batalha Naval e o `sounddevice` opcional
+são herdados da v3 sem alteração. O som emitido também não mudou, mas os dois
+PCs precisam do `transfer_lib.py` atualizado, porque quem recebe é que usa o
+receptor novo.
 
 ## Arquivos
 
@@ -107,10 +111,36 @@ tom de dado (1000 Hz) é idêntico em proporção.
 
 ### Decodificação
 
-Idêntica à v3: o receptor roda uma FFT por bloco até reconhecer o sync,
-grava até 2,5 s de silêncio contínuo, procura onde os dados começam
-(`find_data_start`, sem depender de deslocamento fixo) e lê os 60% centrais
-de cada tom.
+Nenhuma etapa usa um limiar de volume fixo. Um tom é reconhecido por se
+**destacar dos vizinhos no espectro** (proeminência local, 6× a mediana em
+volta). Isso vale para qualquer volume e qualquer ruído de fundo, inclusive
+ruído que não é plano, como o de sala, mais forte nos graves.
+
+1. **Sync:** o tom mais destacado da faixa do protocolo precisa estar em
+   1000 Hz por 0,25 s seguidos. Um bloco isolado (palavra, estalo) não dispara.
+   Os 0,3 s anteriores entram na gravação, para não perder o começo do sync.
+2. **Fim:** 2,5 s seguidos sem nenhum tom do protocolo. O ruído de fundo,
+   por mais alto que seja, não segura a gravação.
+3. **Alinhamento** (`find_data_start`): acha o sync numa faixa estreita em
+   volta de 1000 Hz, depois o primeiro tom na faixa dos dados. Em seguida,
+   refina pela grade inteira: soma a energia de todos os tons para cada
+   deslocamento candidato.
+4. **Leitura:** os 60% centrais de cada tom, procurando o pico só dentro da
+   faixa dos dígitos (1,9–3,6 kHz). Graves, vibração e ruído fora da faixa não
+   competem com o tom.
+
+### Por que mudou
+
+A versão anterior (herdada da v3) falhou num teste real entre dois PCs, que
+está registrado pela ferramenta em [`../diagnostico/`](../diagnostico/README.md):
+
+- o detector de sync tomava ruído de sala por sync em 61% dos blocos;
+- o ruído de fundo (pico ~3800) nunca ficava abaixo do limiar fixo de 150,
+  então cada recepção só parava no teto de 30 s e engolia a seguinte;
+- uma vibração em ~13 Hz era mais forte que os tons, e o decodificador, que
+  pegava o maior pico do espectro inteiro, leu 6 de 32 dígitos como lixo.
+
+Resultado na mesma gravação: antes, 0 de 2 transmissões; agora, 2 de 2.
 
 ### Loopback
 
@@ -145,20 +175,17 @@ mesmas da v3), a taxa útil e o custo por transmissão são idênticos aos da v3
 | Medida                                    | Valor        |
 | ------------------------------------------ | ------------ |
 | Taxa útil                                  | 1,25 bytes/s |
-| Payload máximo por transmissão (teto 30s)  | 35 bytes     |
+| Payload máximo por transmissão (teto 30s)  | 34 bytes     |
 | Tiro `"B3"`                                | 7,1 s        |
 | Resposta `"X"`                             | 6,3 s        |
 | Preâmbulo fixo por transmissão             | 5,5 s        |
-| Acerto a 40 dB de SNR                      | 100 %        |
-| Acerto a 30 dB                             | ~60-70 %*    |
-| Acerto a 20 dB                             | 0 %*         |
+| Acerto a 40, 30, 20 e 15 dB de SNR         | 100 %        |
+| Acerto a 10 dB                             | 90–100 %     |
+| Acerto a 5 dB / 0 dB*                      | 100 % / 95 % |
 
-\* A robustez a ruído não depende da faixa escolhida — testei os tons da v3
-(19–21,5 kHz) nesta mesma máquina e o resultado a 30 dB foi parecido
-(55–65%), bem abaixo dos 95% que o README da v3 registra. Isso é uma
-característica do decodificador/ambiente (provavelmente sensível à versão do
-numpy), não algo introduzido por esta versão. Sem correção de erro, o
-decodificador é frágil perto de 30 dB independente da frequência do tom.
+\* Medido fora da suíte: 20 rodadas de `"Vamos para a praia"` com ruído branco
+pelo `loopback`. Antes do conserto do receptor, a 30 dB eram 70% e, a 20 dB,
+0%.
 
 ## Limitações conhecidas
 
@@ -168,7 +195,7 @@ decodificador é frágil perto de 30 dB independente da frequência do tom.
 - **O preâmbulo domina o custo**, igual na v3: 5,5 s fixos por transmissão
   contra 0,8 s de dados numa resposta de 1 byte.
 - **Sem correção de erro.** Um dígito lido errado corrompe o byte. Rode com
-  `--ruido 15` no jogo para ver o efeito.
+  `--ruido -5` no jogo para ver o efeito.
 - **Teto de 30 s** limita o payload a ~35 bytes por transmissão. Suba `max_s`
   se precisar de mais.
 - **Modo áudio tem corrida de largada.** O receptor precisa estar escutando

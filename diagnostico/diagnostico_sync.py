@@ -51,7 +51,19 @@ RAIZ = os.path.dirname(AQUI)
 
 HEX_TESTE = "0123456789abcdef"
 LIMIAR_NCC = 0.15       # correlacao minima para considerar que achou a transmissao
-TOLERANCIA_MS = 50      # erro de alinhamento que o decodificador ainda aguenta (20% do tom)
+# Erro de alinhamento que o decodificador aguenta. Assimetrico: a leitura cobre
+# 50-200 ms de cada tom de 250 ms. Adiantada, ela entra no silencio/eco do tom
+# ANTERIOR (frequencia errada); atrasada, le a cauda e o eco do MESMO tom, e o
+# proximo so comeca em 400 ms. Com eco na sala o alinhamento tende a atrasar.
+TOLERANCIA_ANTES_MS = 50
+TOLERANCIA_DEPOIS_MS = 100
+
+
+def dentro_da_margem(erro_ms):
+    return -TOLERANCIA_ANTES_MS <= erro_ms <= TOLERANCIA_DEPOIS_MS
+
+
+MARGEM = f"-{TOLERANCIA_ANTES_MS}/+{TOLERANCIA_DEPOIS_MS} ms"
 SNR_MINIMO_DB = 15      # abaixo disso o tom esta enterrado no ruido
 
 tl = None   # transfer_lib da versao escolhida, carregado em main()
@@ -104,6 +116,14 @@ def gerar_teste(hexstr):
 
 def freq_do_digito(c):
     return tl.fbase + tl.step_hz * int(c, 16)
+
+
+def freq_na_faixa(seg):
+    """Como dominant_freq, mas so procura o pico entre o digito 0 e o f."""
+    ft = np.abs(np.fft.rfft(seg * np.blackman(len(seg))))
+    hz = np.arange(len(ft)) * tl.Fs / len(seg)
+    faixa = (hz >= tl.fbase - tl.step_hz) & (hz <= tl.fbase + 16 * tl.step_hz)
+    return hz[faixa][np.argmax(ft[faixa])]
 
 
 def amplitude_em(seg, f):
@@ -273,10 +293,33 @@ def localizar_transmissoes(x, molde):
     return sorted(achadas)
 
 
+def lib_nova():
+    """A v4 consertada tem receptor por proeminencia (analisar_bloco); a v3
+    ainda usa o detector antigo, que esta ferramenta replica."""
+    return hasattr(tl, "analisar_bloco")
+
+
 def simular_receptor(audio):
-    """Replica exata de transfer_lib._coletar, mas anotando ONDE comecou, onde
-    parou e POR QUE parou. Roda em sequencia sobre a gravacao inteira, como um
-    receptor que volta a escutar assim que termina uma recepcao."""
+    """Roda o receptor sobre a gravacao inteira, em sequencia, como um
+    receptor que volta a escutar assim que termina uma recepcao. Anota ONDE
+    cada recepcao comecou, onde parou e POR QUE parou."""
+    if lib_nova():
+        sessoes, pos = [], 0
+        while pos < len(audio) - tl.CHUNK:
+            info = {}
+            trecho = tl._coletar(tl._blocos_do_array(audio[pos:]), verbose=False, info=info)
+            if info["ini"] is None:
+                break
+            sessoes.append(dict(ini=pos + info["ini"], fim=pos + info["fim"],
+                                motivo=info["motivo"], hex=tl.signal_to_hex(trecho),
+                                data_start=tl.find_data_start(trecho.astype(np.float64))))
+            pos += info["fim"]
+        return sessoes
+    return _simular_receptor_antigo(audio)
+
+
+def _simular_receptor_antigo(audio):
+    """Replica exata do _coletar antigo (v3 e v4 antes do conserto)."""
     CH = tl.CHUNK
     nb = len(audio) // CH
     limite_silencio = (tl.Fs / CH) * tl.FIM_SILENCIO
@@ -288,12 +331,8 @@ def simular_receptor(audio):
         j = i
         while j < nb:
             bloco = audio[j * CH:(j + 1) * CH]
-            if ini is None:
-                ft = np.abs(np.fft.rfft(bloco))
-                ft[:20] = 0
-                hz = np.argmax(ft) * tl.Fs / len(bloco)
-                if tl.fsync - 300 < hz < tl.fsync + 300:
-                    ini = j
+            if ini is None and dispara_sync(bloco):
+                ini = j
             if ini is not None:
                 total += CH
                 if total > tl.MAX_RECORD_S * tl.Fs:
@@ -316,10 +355,20 @@ def simular_receptor(audio):
 
 
 def dispara_sync(bloco):
+    """Um bloco sozinho seria tomado por sync?"""
+    if lib_nova():
+        return tl.analisar_bloco(bloco)[1]
     ft = np.abs(np.fft.rfft(bloco))
     ft[:20] = 0
     hz = np.argmax(ft) * tl.Fs / len(bloco)
     return tl.fsync - 300 < hz < tl.fsync + 300
+
+
+def leitura_da_lib(seg):
+    """Frequencia que o decodificador do transfer_lib leria neste trecho."""
+    if hasattr(tl, "_tom_na_faixa"):
+        return tl._tom_na_faixa(seg)[0]
+    return tl.dominant_freq(seg)
 
 
 def comparar(esperado, lido):
@@ -372,8 +421,8 @@ def analisar(audio, hexstr, rel, overflows=None):
     sinal_pico = int(picos[~so_ruido].max()) if (~so_ruido).any() else 0
     clip = int(np.sum(np.abs(audio.astype(np.int32)) >= 32700))
     if ruido_p50 is not None:
-        rel(f"   ruido de fundo: pico tipico {ruido_p50}, pico p90 {ruido_p90} "
-            f"(SILENCE_FLOOR do receptor = {tl.SILENCE_FLOOR})")
+        rel(f"   ruido de fundo: pico tipico {ruido_p50}, pico p90 {ruido_p90}"
+            + ("" if lib_nova() else f" (SILENCE_FLOOR do receptor = {tl.SILENCE_FLOOR})"))
     if trans:
         rel(f"   pico durante as transmissoes: {sinal_pico}")
     if clip:
@@ -408,20 +457,29 @@ def analisar(audio, hexstr, rel, overflows=None):
         seg_sync = x[max(0, s0) + int(0.33 * tl.syncDur * Fs):ini - int(tl.MIDGAP * Fs)]
         if len(seg_sync) > 256:
             rel(f"   sync {tl.fsync} Hz: SNR {min(snr(seg_sync, tl.fsync), 99):5.1f} dB")
-        lidos, fracos = "", []
+        # O receptor ideal le o pico so DENTRO da faixa dos dados. Em paralelo,
+        # anota o que o transfer_lib leria (pico do espectro inteiro): se os dois
+        # divergem, o tom chegou mas um ruido fora da faixa o encobre.
+        lidos, lib_lidos, fracos, mascarados = "", "", [], []
         for k, c in enumerate(hexstr):
             a = ini + k * p + recuo
             seg = x[a:a + largura]
             if len(seg) < largura:
                 break
             f_esp = freq_do_digito(c)
-            f_lida = tl.dominant_freq(seg)
-            v = int(round((f_lida - tl.fbase) / tl.step_hz))
+            f_banda = freq_na_faixa(seg)
+            v = int(round((f_banda - tl.fbase) / tl.step_hz))
             d = format(v, "x") if 0 <= v <= 15 else "?"
             lidos += d
+            f_lib = leitura_da_lib(seg)
+            v = int(round((f_lib - tl.fbase) / tl.step_hz))
+            d_lib = format(v, "x") if 0 <= v <= 15 and tl.fbase - 500 < f_lib < tl.fbase + 16 * tl.step_hz + 500 else "?"
+            lib_lidos += d_lib
             s = snr(seg, f_esp)
             if d != c or s < SNR_MINIMO_DB:
-                fracos.append(f"{c}({f_esp}Hz): SNR {s:.0f}dB, pico em {f_lida:.0f}Hz -> '{d}'")
+                fracos.append(f"{c}({f_esp}Hz): SNR {s:.0f}dB, pico na faixa em {f_banda:.0f}Hz -> '{d}'")
+            elif d_lib != c:
+                mascarados.append(f"{c}({f_esp}Hz): SNR {s:.0f}dB, mas o pico do espectro inteiro esta em {f_lib:.0f}Hz")
         rel(f"   tons lidos: {lidos}")
         rel(f"               {comparar(hexstr, lidos)}")
         for fr in fracos:
@@ -429,40 +487,79 @@ def analisar(audio, hexstr, rel, overflows=None):
         ok = lidos == hexstr
         canal_ok.append(ok)
         rel(f"   {'[OK]    canal entrega os 16 tons certos' if ok else '[FALHA] o proprio som chega errado - problema de hardware/ambiente'}")
+        if mascarados:
+            rel(f"   [FALHA] mas o decodificador do transfer_lib leria: {lib_lidos}")
+            rel(f"                                                     {comparar(hexstr, lib_lidos)}")
+            for m in mascarados:
+                rel(f"     - {m}")
+            rel("           Ele pega o maior pico do espectro INTEIRO, sem filtrar a faixa dos")
+            rel("           dados: um ruido fora da faixa (grave, vibracao) mais forte que o tom")
+            rel("           vence. O som chegou certo - falta um filtro passa-faixa no software.")
+            problemas.append("ruido fora da faixa encobre os tons (falta filtro no decodificador)")
 
     # ------------------------------------------------ 3. detector de sync
-    rel(f"\n3) DETECTOR DE SYNC do transfer_lib (FFT por bloco, pico entre "
-        f"{tl.fsync - 300} e {tl.fsync + 300} Hz)")
+    if lib_nova():
+        n_sync = max(1, int(round(min(tl.SYNC_MIN_S, 0.4 * tl.syncDur) * Fs / CH)))
+        rel(f"\n3) DETECTOR DE SYNC do transfer_lib (tom em {tl.fsync} Hz destacado "
+            f"{tl.PROEMINENCIA:g}x dos vizinhos, por {n_sync} blocos seguidos)")
+    else:
+        rel(f"\n3) DETECTOR DE SYNC do transfer_lib (FFT por bloco, pico entre "
+            f"{tl.fsync - 300} e {tl.fsync + 300} Hz)")
     if so_ruido.any():
-        falsos = sum(dispara_sync(b) for b in blocos[so_ruido])
-        tot = int(so_ruido.sum())
+        marcas = np.array([dispara_sync(b) for b in blocos[so_ruido]])
+        falsos, tot = int(marcas.sum()), int(so_ruido.sum())
         pct = 100 * falsos / tot
-        rel(f"   em trechos SEM transmissao, {falsos}/{tot} blocos ({pct:.0f}%) disparariam o sync")
-        if pct > 1:
-            rel("   [FALHA] o detector confunde ruido ambiente com sync. Ele zera so ate ~940 Hz")
-            rel("           e aceita o maior pico do bloco, sem exigir que ele se destaque do")
-            rel("           ruido nem que dure: ruido de sala (mais forte nos graves) tem o pico")
-            rel("           logo acima do corte, dentro da janela do sync. A gravacao comeca na")
-            rel("           hora errada.")
-            problemas.append(f"sync dispara com ruido ({pct:.0f}% dos blocos)")
+        if lib_nova():
+            seguidos = maior = 0
+            for m in marcas:
+                seguidos = seguidos + 1 if m else 0
+                maior = max(maior, seguidos)
+            rel(f"   em trechos SEM transmissao, {falsos}/{tot} blocos ({pct:.0f}%) parecem sync;")
+            rel(f"   a maior sequencia seguida foi de {maior} (o receptor exige {n_sync})")
+            if maior >= n_sync:
+                rel("   [FALHA] o ruido sustentou um falso sync - ha um tom perto de "
+                    f"{tl.fsync} Hz na sala?")
+                problemas.append("ruido sustentado na frequencia do sync")
+            else:
+                rel("   [OK]    nenhum trecho de ruido dura o bastante para disparar")
         else:
-            rel("   [OK]    ruido ambiente nao dispara o sync")
+            rel(f"   em trechos SEM transmissao, {falsos}/{tot} blocos ({pct:.0f}%) disparariam o sync")
+            if pct > 1:
+                rel("   [FALHA] o detector confunde ruido ambiente com sync. Ele zera so ate ~940 Hz")
+                rel("           e aceita o maior pico do bloco, sem exigir que ele se destaque do")
+                rel("           ruido nem que dure: ruido de sala (mais forte nos graves) tem o pico")
+                rel("           logo acima do corte, dentro da janela do sync. A gravacao comeca na")
+                rel("           hora errada.")
+                problemas.append(f"sync dispara com ruido ({pct:.0f}% dos blocos)")
+            else:
+                rel("   [OK]    ruido ambiente nao dispara o sync")
 
     # ------------------------------------------------ 4. fim da transmissao
-    rel(f"\n4) DETECCAO DE FIM (precisa de {tl.FIM_SILENCIO}s com todo bloco abaixo de "
-        f"{tl.SILENCE_FLOOR})")
-    if ruido_p50 is not None:
-        if ruido_p50 >= tl.SILENCE_FLOOR:
-            rel(f"   [FALHA] o ruido de fundo (pico {ruido_p50}) ja passa do SILENCE_FLOOR: o")
-            rel(f"           receptor nunca ve silencio e so para no teto de {tl.MAX_RECORD_S}s.")
-            rel("           Se isso acontecer depois de um disparo falso, a transmissao seguinte")
-            rel("           chega enquanto ele ainda esta preso na gravacao anterior.")
-            problemas.append("ruido acima do SILENCE_FLOOR - fim nunca detectado")
-        elif ruido_p90 >= tl.SILENCE_FLOOR:
-            rel(f"   [ALERTA] ruido as vezes passa do limiar (p90 = {ruido_p90}): o fim pode demorar")
-            problemas.append("ruido perto do SILENCE_FLOOR")
-        else:
-            rel("   [OK]    ruido de fundo abaixo do limiar de silencio")
+    if lib_nova():
+        rel(f"\n4) DETECCAO DE FIM (precisa de {tl.FIM_SILENCIO}s seguidos sem tom do protocolo)")
+        if so_ruido.any():
+            com_tom = 100 * np.mean([tl.analisar_bloco(b)[0] for b in blocos[so_ruido]])
+            rel(f"   em trechos SEM transmissao, {com_tom:.0f}% dos blocos tem algo parecido com tom")
+            if com_tom > 20:
+                rel("   [ALERTA] isso atrasa o fim da recepcao (som tonal na sala: voz, musica, apito?)")
+                problemas.append("som tonal na sala atrasa o fim da recepcao")
+            else:
+                rel("   [OK]    o ruido de fundo nao impede o fim da recepcao")
+    else:
+        rel(f"\n4) DETECCAO DE FIM (precisa de {tl.FIM_SILENCIO}s com todo bloco abaixo de "
+            f"{tl.SILENCE_FLOOR})")
+        if ruido_p50 is not None:
+            if ruido_p50 >= tl.SILENCE_FLOOR:
+                rel(f"   [FALHA] o ruido de fundo (pico {ruido_p50}) ja passa do SILENCE_FLOOR: o")
+                rel(f"           receptor nunca ve silencio e so para no teto de {tl.MAX_RECORD_S}s.")
+                rel("           Se isso acontecer depois de um disparo falso, a transmissao seguinte")
+                rel("           chega enquanto ele ainda esta preso na gravacao anterior.")
+                problemas.append("ruido acima do SILENCE_FLOOR - fim nunca detectado")
+            elif ruido_p90 >= tl.SILENCE_FLOOR:
+                rel(f"   [ALERTA] ruido as vezes passa do limiar (p90 = {ruido_p90}): o fim pode demorar")
+                problemas.append("ruido perto do SILENCE_FLOOR")
+            else:
+                rel("   [OK]    ruido de fundo abaixo do limiar de silencio")
 
     # ------------------------------------------------ 5/6. receptor de verdade
     rel("\n5) RECEPTOR DO transfer_lib RODANDO SOBRE ESTA GRAVACAO")
@@ -508,19 +605,19 @@ def analisar(audio, hexstr, rel, overflows=None):
             # inteiro so pula/inventa digitos, o que importa e o resto.
             passo_ms = p / Fs * 1000
             efetivo = (erro + passo_ms / 2) % passo_ms - passo_ms / 2
-            if abs(erro) <= TOLERANCIA_MS:
+            if dentro_da_margem(erro):
                 rel(f"   [OK]    find_data_start alinhou com erro de {erro:+.0f} ms")
             else:
                 rel(f"   [FALHA] find_data_start errou por {erro:+.0f} ms")
                 if abs(erro / 1000 + tl.syncDur + tl.MIDGAP) < 0.3:
                     rel("           Ele devolveu o inicio do SYNC, nao dos dados: um pico de ruido antes")
                     rel("           do sync foi tomado como 'sync', e o sync real como 'primeiro tom'.")
-                if abs(efetivo) <= TOLERANCIA_MS:
+                if dentro_da_margem(efetivo):
                     rel(f"           A grade de leitura (passo {passo_ms:.0f} ms) ainda cai nos tons por")
                     rel(f"           coincidencia ({efetivo:+.0f} ms) - com outro perfil ou mais eco, erra.")
                 else:
                     rel(f"           A grade de leitura fica {efetivo:+.0f} ms fora do centro dos tons")
-                    rel(f"           (margem segura +-{TOLERANCIA_MS} ms): acerta ou erra conforme o eco.")
+                    rel(f"           (margem segura {MARGEM}): acerta ou erra conforme o eco.")
                 problemas.append("find_data_start desalinhado")
         esperado = hexstr * len(dentro)
         rel(f"   esperado: {esperado}")
