@@ -6,6 +6,12 @@
       "runtimeExecutable": "python",
       "runtimeArgs": ["-m", "http.server", "8765", "--directory", "diagnostico/web"],
       "port": 8765
+    },
+    {
+      "name": "batalha-web",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "8766", "--directory", "web/batalha-naval"],
+      "port": 8766
     }
   ]
 }

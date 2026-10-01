@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b1726">
+<title>Batalha Naval Sonora</title>
+<meta name="description" content="Batalha Naval em que cada jogada viaja por som entre dois aparelhos: PC, celular ou o jogo em Python da v4.">
+<style>
+:root {
+  --fundo: #0b1726; --painel: #11233a; --borda: #1d3654; --mar: #16365a; --mar-hover: #2a5c8e;
+  --texto: #e6eef7; --fraco: #8aa4c0; --navio: #9aa9ba; --acerto: #e5484d; --afundado: #7a1f22;
+  --agua: #4fa3e0; --destaque: #f2c14e; --ok: #4cc38a;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--fundo); color: var(--texto); }
+body { font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; -webkit-text-size-adjust: 100%; }
+main { max-width: 980px; margin: 0 auto; padding: 16px 16px 48px; }
+h1 { font-size: 1.45rem; margin: 0; letter-spacing: -.01em; }
+h2 { font-size: .78rem; letter-spacing: .06em; text-transform: uppercase; color: var(--fraco); margin: 0 0 10px; }
+p { margin: 0; }
+button { font: inherit; color: inherit; }
+[hidden] { display: none !important; }
+
+.btn { font-weight: 700; border: 0; border-radius: 10px; padding: 12px 16px; cursor: pointer;
+  background: var(--borda); color: var(--texto); touch-action: manipulation; }
+.btn.primario { background: var(--destaque); color: var(--fundo); }
+.btn:disabled { opacity: .45; cursor: default; }
+.btn:focus-visible, .celula:focus-visible, .modo:focus-within { outline: 3px solid var(--destaque); outline-offset: 2px; }
+
+.painel { background: var(--painel); border-radius: 14px; padding: 16px; }
+
+/* ---------------------------------------------------------------- início */
+#inicio { max-width: 560px; margin: 0 auto; display: grid; gap: 14px; }
+#inicio .sub { color: var(--fraco); margin-top: 4px; }
+.modos { display: grid; gap: 8px; }
+.modo { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; align-items: start;
+  background: var(--fundo); border: 2px solid var(--borda); border-radius: 12px; padding: 12px 14px; cursor: pointer; }
+.modo:has(input:checked) { border-color: var(--destaque); }
+.modo input { margin: 4px 0 0; accent-color: var(--destaque); width: 18px; height: 18px; grid-row: span 2; }
+.modo b { font-size: 1rem; }
+.modo span { color: var(--fraco); font-size: .9rem; }
+.opcoes { display: grid; gap: 12px; }
+.opcao { display: flex; align-items: center; gap: 10px; }
+.opcao input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--destaque); flex: none; }
+.opcao input[type=number] { width: 90px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--borda);
+  background: var(--fundo); color: var(--texto); font: inherit; }
+.dicas { color: var(--fraco); font-size: .9rem; padding-left: 18px; margin: 0; }
+.dicas li { margin: 4px 0; }
+.erro { color: var(--acerto); font-weight: 600; }
+#comecar { width: 100%; padding: 15px; font-size: 1.05rem; }
+
+/* ------------------------------------------------------------------ jogo */
+#jogo { display: grid; gap: 12px; }
+.topo { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.topo h1 { font-size: 1.15rem; }
+.chip { color: var(--fraco); font-size: .85rem; }
+.topo .acoes { margin-left: auto; display: flex; gap: 8px; }
+.topo .btn { padding: 9px 12px; font-size: .9rem; }
+
+#status { border-radius: 12px; padding: 12px 14px; font-weight: 700; text-align: center;
+  background: var(--painel); position: sticky; top: 8px; z-index: 2; box-shadow: 0 6px 18px rgba(0,0,0,.35); }
+#status.vez { background: var(--destaque); color: var(--fundo); }
+#status.vitoria { background: var(--ok); color: var(--fundo); }
+#status.derrota { background: var(--acerto); }
+#status.espera { background: var(--borda); }
+
+.modem { display: grid; gap: 10px; }
+.fase { display: flex; gap: 10px; align-items: baseline; font: .9rem/1.3 var(--mono); }
+.fase .rotulo { font: 700 .75rem system-ui, sans-serif; letter-spacing: .06em; color: var(--fraco); }
+.medidores { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; }
+.barra { height: 8px; border-radius: 4px; background: var(--fundo); overflow: hidden; }
+.barra i { display: block; height: 100%; width: 0; background: var(--destaque); border-radius: 4px; }
+.barra.ocupada i { width: 30%; animation: vaivem 1.1s ease-in-out infinite alternate; }
+@keyframes vaivem { from { margin-left: 0; } to { margin-left: 70%; } }
+.mic { display: flex; gap: 6px; align-items: center; font-size: .8rem; color: var(--fraco); }
+.mic .barra { width: 90px; }
+.mic .barra i { background: var(--ok); transition: width .08s; }
+#tom { font: 700 .75rem var(--mono); color: var(--ok); min-width: 54px; }
+.botoes-modem { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+#btn-repetir:not(:disabled) { background: var(--destaque); color: var(--fundo); }
+
+.tabuleiros { display: grid; gap: 12px; grid-template-columns: 1fr; }
+@media (min-width: 760px) { .tabuleiros { grid-template-columns: 1fr 1fr; } }
+.tabuleiro { min-width: 0; }
+.grade { display: grid; grid-template-columns: 22px repeat(6, 1fr); gap: 4px; max-width: 400px; margin: 0 auto; }
+.grade .eixo { display: grid; place-items: center; font-weight: 700; font-size: .8rem; color: var(--fraco); }
+.celula { aspect-ratio: 1; border: 0; padding: 0; border-radius: 6px; background: var(--mar); position: relative; cursor: default; }
+.ativa .celula.vazio { cursor: crosshair; }
+@media (hover: hover) { .ativa .celula.vazio:hover { background: var(--mar-hover); } }
+.celula::before, .celula::after { content: ""; position: absolute; }
+.celula.navio::before, .celula.atingido::before, .celula.afundado::before { inset: 14%; border-radius: 4px; background: var(--navio); }
+.celula.afundado::before { background: var(--afundado); box-shadow: inset 0 0 0 2px var(--acerto); }
+.celula.atingido::after, .celula.afundado::after { inset: 22%;
+  background: linear-gradient(45deg, transparent 43%, var(--cor-x) 43% 57%, transparent 57%),
+              linear-gradient(-45deg, transparent 43%, var(--cor-x) 43% 57%, transparent 57%); }
+.celula.atingido { --cor-x: var(--acerto); }
+.celula.afundado { --cor-x: var(--texto); }
+.celula.acerto::before { inset: 24%; border-radius: 50%; background: var(--acerto); }
+.celula.agua::before { inset: 39%; border-radius: 50%; background: var(--agua); }
+.celula.oculto::before { inset: 14%; border-radius: 4px; border: 2px dashed var(--navio); }
+.celula.ultimo { box-shadow: inset 0 0 0 3px var(--destaque); }
+.info { margin-top: 10px; font-size: .88rem; color: var(--texto); white-space: pre-line; }
+
+.legenda { display: flex; flex-wrap: wrap; gap: 6px 14px; justify-content: center; font-size: .8rem; color: var(--fraco); }
+.legenda span::before { content: "■ "; color: var(--c); }
+
+#log { list-style: none; margin: 0; padding: 10px 12px; background: var(--fundo); border-radius: 10px;
+  font: 12px/1.5 var(--mono); max-height: 240px; overflow-y: auto; overflow-wrap: anywhere; }
+#log li { white-space: pre-wrap; }
+#log .hora { color: var(--fraco); margin-right: 8px; }
+#log .tx { color: var(--destaque); } #log .rx { color: var(--agua); }
+#log .aviso, #log .erro { color: var(--acerto); } #log .fim { color: var(--ok); }
+details summary { cursor: pointer; color: var(--fraco); font-size: .8rem; font-weight: 700; letter-spacing: .06em; margin-bottom: 8px; }
+</style>
+</head>
+<body>
+<main>
+  <!-- ================================================================ início -->
+  <section id="inicio">
+    <header>
+      <h1>Batalha Naval Sonora</h1>
+      <p class="sub">Cada jogada viaja por som entre os dois aparelhos (protocolo v4, de 1 a 3,5 kHz). Funciona entre PC e celular, entre dois celulares e contra o jogo em Python.</p>
+    </header>
+
+    <form class="painel" id="form-inicio">
+      <h2>Como você quer jogar?</h2>
+      <div class="modos">
+        <label class="modo"><input type="radio" name="modo" value="anfitriao" checked>
+          <b>Dois aparelhos: anfitrião</b><span>Você atira primeiro.</span></label>
+        <label class="modo"><input type="radio" name="modo" value="convidado">
+          <b>Dois aparelhos: convidado</b><span>O anfitrião atira primeiro.</span></label>
+        <label class="modo"><input type="radio" name="modo" value="cpu">
+          <b>Contra o computador</b><span>As jogadas passam pelo modem sem sair do aparelho. Não usa o microfone.</span></label>
+      </div>
+
+      <div class="opcoes" style="margin-top:16px">
+        <div id="op-audio" class="opcoes">
+          <label class="opcao"><input type="checkbox" id="volmax">
+            Volume máximo (alto-falantes fracos, como o de celular)</label>
+          <ul class="dicas">
+            <li>Abra esta página nos dois aparelhos, ou o jogo em Python no PC (<code>python v4/batalha_naval_gui.py</code>). Um é anfitrião, o outro convidado.</li>
+            <li>Volume alto, modo silencioso desligado, aparelhos próximos e sala em silêncio.</li>
+            <li>Deixe a tela ligada e a página aberta durante a partida.</li>
+          </ul>
+        </div>
+        <div id="op-cpu" class="opcoes" hidden>
+          <label class="opcao"><input type="checkbox" id="ouvir">
+            Tocar o áudio de cada jogada no alto-falante</label>
+          <label class="opcao">Ruído no canal
+            <input type="number" id="ruido" min="0" max="60" step="1" placeholder="sem" inputmode="decimal"> dB de SNR</label>
+        </div>
+      </div>
+      <p id="erro-inicio" class="erro" role="alert" style="margin-top:12px" hidden></p>
+      <button type="submit" id="comecar" class="btn primario" style="margin-top:16px">Começar</button>
+    </form>
+  </section>
+
+  <!-- ================================================================== jogo -->
+  <section id="jogo" hidden>
+    <div class="topo">
+      <h1>Batalha Naval Sonora</h1>
+      <span class="chip" id="chip"></span>
+      <div class="acoes">
+        <button class="btn" id="btn-sortear">Sortear navios</button>
+        <button class="btn" id="btn-nova">Nova partida</button>
+      </div>
+    </div>
+
+    <div id="status" role="status" aria-live="polite"></div>
+
+    <div class="painel modem">
+      <div class="fase"><span class="rotulo">MODEM</span><span id="fase">parado</span></div>
+      <div class="medidores">
+        <div class="barra" id="barra"><i></i></div>
+        <div class="mic" id="mic">mic <div class="barra"><i id="nivel"></i></div><span id="tom"></span></div>
+      </div>
+      <div class="botoes-modem">
+        <button class="btn" id="btn-repetir" disabled>Repetir tiro</button>
+        <button class="btn" id="btn-parar" disabled>Parar de ouvir</button>
+      </div>
+    </div>
+
+    <div class="tabuleiros">
+      <div class="painel tabuleiro">
+        <h2>Tiros no inimigo</h2>
+        <div class="grade" id="grade-mira" aria-label="Tabuleiro do inimigo"></div>
+        <p class="info" id="info-mira"></p>
+      </div>
+      <div class="painel tabuleiro">
+        <h2>Seu tabuleiro</h2>
+        <div class="grade" id="grade-meu" aria-label="Seu tabuleiro"></div>
+        <p class="info" id="info-meu"></p>
+      </div>
+    </div>
+
+    <div class="legenda">
+      <span style="--c:var(--navio)">navio</span><span style="--c:var(--acerto)">acerto</span>
+      <span style="--c:var(--afundado)">afundado</span><span style="--c:var(--agua)">água</span>
+      <span style="--c:var(--destaque)">último tiro</span>
+    </div>
+
+    <details class="painel" open>
+      <summary>REGISTRO DO MODEM</summary>
+      <ol id="log"></ol>
+    </details>
+  </section>
+</main>
+<script type="module" src="app.js"></script>
+</body>
+</html>

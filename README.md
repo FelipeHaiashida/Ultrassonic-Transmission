@@ -33,6 +33,7 @@ comandos.
 | [`v3/`](v3/README.md)   | Vira jogo: Batalha Naval jogado inteiramente por som, com modo loopback (testa sem hardware) e suíte de testes automatizados. |
 | [`v4/`](v4/README.md)   | Mesmo protocolo da v3, só que numa faixa de som **audível** (1–3,5 kHz), para facilitar teste e depuração, com um receptor reescrito para ruído de sala. |
 | [`v5/`](v5/README.md)   | **Recomendada.** Feita para ruído: faixa de 5–8 kHz (onde o ruído de sala é bem menor), sincronismo por *chirp*, correção de erros Reed-Solomon e simulador de canal para medir tudo sem hardware. |
+| [`web/batalha-naval/`](web/batalha-naval/README.md) | A Batalha Naval da v4 no navegador, com o modem portado para JavaScript: joga PC × celular, celular × celular e contra o jogo em Python. |
 | [`diagnostico/`](diagnostico/README.md) | Ferramenta para testar a transmissão entre 2 PCs e explicar, etapa por etapa, por que deu certo ou errado. |
 | [`docs/`](docs/)        | Documentação do projeto (Termo de Abertura, Planejamento de Entregáveis, Documentação da Fase 1), em português. |
 
