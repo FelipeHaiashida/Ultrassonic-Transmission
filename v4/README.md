@@ -74,9 +74,24 @@ A janela pergunta o modo (contra a CPU, anfitrião ou convidado) e mostra os
 dois tabuleiros. Para atirar, clique numa casa do tabuleiro da direita. O
 painel do modem mostra cada mensagem trafegando, com o hex e se chegou
 inteira. No áudio real, ele mostra também o nível do microfone e o tom do
-protocolo que está sendo reconhecido (`SYNC` ou a frequência do dígito). Se a
-resposta do adversário se perder no ar, **Parar de ouvir** encerra a espera e
-conta a jogada como perdida. Só usa `tkinter`, que já vem com o Python.
+protocolo que está sendo reconhecido (`SYNC` ou a frequência do dígito). Só usa
+`tkinter`, que já vem com o Python.
+
+No áudio real, uma mensagem pode se perder no ar. A interface tem três saídas:
+
+- **Repetir tiro**: enquanto você espera a resposta, toca o mesmo tiro de novo
+  e volta a ouvir. Use quando o outro PC não ouviu o tiro. Se depois de 15 s
+  nada chegou, a janela sugere repetir. O botão fica bloqueado enquanto o
+  microfone está captando um tom do protocolo, para não tocar por cima de uma
+  resposta que está chegando.
+- **Repetir resposta**: na sua vez, depois de responder a um tiro, toca a
+  resposta de novo. Use quando o outro PC não ouviu a sua resposta.
+- **Parar de ouvir**: desiste de esperar e conta a jogada como perdida.
+
+Quem espera um tiro e ouve algo ilegível continua ouvindo, para dar tempo de o
+tiro repetido chegar. Se a resposta ao seu tiro se perder de vez, o próximo
+tiro do adversário é reconhecido como tiro e a partida segue sozinha. Só o
+resultado daquele tiro fica desconhecido, e você pode atirar lá de novo.
 
 No terminal:
 

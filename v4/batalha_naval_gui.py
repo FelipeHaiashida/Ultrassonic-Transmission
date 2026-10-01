@@ -18,9 +18,17 @@ o que está trafegando: a transmissão tocando, o microfone ouvindo (com o níve
 de entrada e o tom do protocolo que ele reconhece) e o registro de cada
 mensagem, com o hex e se chegou inteira.
 
-Se o adversário não responder (a mensagem se perdeu no ar), "Parar de ouvir"
-encerra a espera e conta a jogada como perdida, como o modo terminal faz com
-uma mensagem ininteligível.
+No áudio real, uma mensagem pode se perder no ar. Para isso:
+
+    Repetir tiro       enquanto você espera a resposta: toca o mesmo tiro de
+                       novo e volta a ouvir (o adversário não ouviu o tiro)
+    Repetir resposta   na sua vez, depois de responder: toca a resposta de
+                       novo (o adversário não ouviu a sua resposta)
+    Parar de ouvir     desiste de esperar e conta a jogada como perdida
+
+Quem espera um tiro e ouve algo ilegível continua ouvindo, para dar tempo de o
+tiro repetido chegar. E se a resposta ao seu tiro se perder de vez, o próximo
+tiro do adversário é reconhecido como tiro e a partida segue sozinha.
 
 Usa só tkinter, que já vem com o Python. sounddevice só é necessário para o
 áudio real e para a opção de ouvir as jogadas.
@@ -43,6 +51,9 @@ import transfer_lib as tl
 
 VERSAO = os.path.basename(os.path.dirname(os.path.abspath(__file__)))
 RESPOSTAS = (bn.AGUA, bn.ACERTO, bn.AFUNDOU, bn.VITORIA)
+REPETIR = object()          # _ouvir() interrompido por "Repetir tiro"
+DICA_SEM_RESPOSTA_S = 15    # tiro + fim da recepção do outro lado + resposta ≈ 12 s
+TOM_RECENTE_S = 3           # tom do protocolo ouvido há menos disso: algo está chegando
 
 COR = {
     "fundo":    "#0b1726",
@@ -90,10 +101,12 @@ class Partida:
         self.ultimo_mira = None     # último tiro dado
         self.iniciou = False        # depois do primeiro tiro, os navios não mudam mais
         self.fim = None             # "vitoria" / "derrota"
+        self.ultima_resposta = None # o que respondi ao último tiro, para repetir
 
         self.trava = threading.Lock()
         self.encerrada = threading.Event()
         self.pular = threading.Event()
+        self.repetir = threading.Event()
 
     def checar(self):
         if self.encerrada.is_set():
@@ -330,6 +343,9 @@ class App(tk.Tk):
         self.anim = None            # (início, duração) da transmissão em curso
         self.ouvindo_desde = None
         self.texto_fase = ""
+        self.repetir_modo = None    # None, "tiro" ou "resposta"
+        self.ultimo_tom = 0.0       # quando o microfone reconheceu um tom do protocolo
+        self.dica_dada = False
 
         estilo = ttk.Style(self)
         estilo.theme_use("clam")
@@ -391,6 +407,9 @@ class App(tk.Tk):
         self.btn_parar = botao(linha, "Parar de ouvir", self._parar_de_ouvir)
         self.btn_parar.config(state="disabled")
         self.btn_parar.pack(side="right")
+        self.btn_repetir = botao(linha, "Repetir tiro", self._repetir)
+        self.btn_repetir.config(state="disabled")
+        self.btn_repetir.pack(side="right", padx=8)
 
         linha = tk.Frame(modem, bg=COR["painel"])
         linha.pack(fill="x", pady=(8, 6))
@@ -509,14 +528,28 @@ class App(tk.Tk):
             return
         p.iniciou = True
         p.ultimo_mira = cel
+        p.ultima_resposta = None
         self.grade_mira.atualizar(self.grade_mira.estados, cel, ativa=False)
         self.btn_sortear.config(state="disabled")
+        self._modo_repetir(None)
         alvo = self._rodada_cpu if p.modo == "cpu" else self._rodada_audio
         self._em_thread(p, alvo, cel)
 
     def _parar_de_ouvir(self):
         if self.p:
             self.p.pular.set()
+
+    def _repetir(self):
+        p = self.p
+        if not p or p.fim:
+            return
+        if self.repetir_modo == "tiro":
+            self.btn_repetir.config(state="disabled")
+            p.repetir.set()
+        elif self.repetir_modo == "resposta" and self.grade_mira.ativa and p.ultima_resposta:
+            self.grade_mira.atualizar(self.grade_mira.estados, self.grade_mira.ultimo, ativa=False)
+            self._modo_repetir(None)
+            self._em_thread(p, self._repetir_resposta)
 
     def _fechar(self):
         if self.p:
@@ -569,49 +602,98 @@ class App(tk.Tk):
         self._ui(p, self._sua_vez_agora)
 
     def _rodada_audio(self, p, alvo):
-        if self._meu_turno_audio(p, alvo):
+        venceu, tiro_dele = self._meu_turno_audio(p, alvo)
+        if venceu:
             return self._ui(p, self._terminar, True)
-        self._turno_dele_e_seguir(p)
+        self._turno_dele_e_seguir(p, tiro_dele)
 
-    def _turno_dele_e_seguir(self, p):
-        if self._turno_dele_audio(p):
+    def _turno_dele_e_seguir(self, p, tiro_dele=None):
+        if self._turno_dele_audio(p, tiro_dele):
             return self._ui(p, self._terminar, False)
         self._ui(p, self._sua_vez_agora)
 
     def _meu_turno_audio(self, p, alvo):
+        """Atira e espera a resposta, repetindo o tiro quando pedido.
+
+        Devolve (venceu, tiro_dele). tiro_dele é preenchido quando, em vez da
+        resposta, chega um tiro: o adversário ouviu o nosso, respondeu, a
+        resposta se perdeu e ele já está na vez dele."""
         coord = bn.fmt_coord(alvo)
+        tentativa = 1
         self._ui(p, self._status, f"Transmitindo {coord}... silêncio na sala", "ocupado")
         self._enviar(p, coord)
-        self._ui(p, self._status, "Aguardando a resposta do adversário...", "ocupado")
-        resposta = self._ouvir(p, "a resposta")
-        if resposta not in RESPOSTAS:
-            motivo = "sem resposta" if resposta is None else f"chegou {resposta!r}"
-            self._ui(p, self._log, f"Resposta ininteligível ({motivo}). Jogada perdida.", "aviso")
-            return False
+        while True:
+            extra = f" (tentativa {tentativa})" if tentativa > 1 else ""
+            self._ui(p, self._status, f"Aguardando a resposta ao tiro em {coord}{extra}...", "ocupado")
+            resposta = self._ouvir(p, "a resposta", repetir=f"Repetir tiro {coord}")
+
+            if resposta is REPETIR:
+                tentativa += 1
+                self._ui(p, self._log, f"Repetindo o tiro em {coord} (tentativa {tentativa}).", "jogo")
+                self._ui(p, self._status, f"Transmitindo {coord} de novo... silêncio na sala", "ocupado")
+                self._enviar(p, coord)
+                continue
+            if resposta is None:
+                self._ui(p, self._log, f"Você desistiu de esperar a resposta ao tiro em {coord}. "
+                                       "Jogada perdida.", "aviso")
+                return False, None
+            if resposta in RESPOSTAS:
+                break
+            tiro_dele = bn.parse_coord(resposta)
+            if tiro_dele is not None:
+                with p.trava:
+                    p.ultimo_mira = None
+                self._ui(p, self._redesenhar)
+                self._ui(p, self._log, f"Chegou um tiro em vez da resposta: o adversário ouviu o seu "
+                                       f"tiro em {coord}, mas a resposta se perdeu. Você pode atirar "
+                                       "lá de novo depois.", "aviso")
+                return False, tiro_dele
+            self._ui(p, self._log, f"Resposta ilegível (chegou {resposta!r}). Continuo ouvindo: repita "
+                                   "o tiro ou peça ao adversário para repetir a resposta.", "aviso")
+
         with p.trava:
             p.mira[alvo] = resposta
             p.ultimo_mira = alvo
         self._ui(p, self._redesenhar)
         self._ui(p, self._log, f"Seu tiro em {coord}: {bn.descrever(resposta)}", "jogo")
-        return resposta == bn.VITORIA
+        return resposta == bn.VITORIA, None
 
-    def _turno_dele_audio(self, p):
-        self._ui(p, self._status, "Aguardando o tiro do adversário...", "espera")
-        texto = self._ouvir(p, "o tiro do adversário")
-        cel = bn.parse_coord(texto)
-        if cel is None:
-            motivo = "escuta interrompida" if texto is None else f"chegou {texto!r}"
-            self._ui(p, self._log, f"Não entendi o tiro ({motivo}). Jogada perdida.", "aviso")
-            return False
+    def _turno_dele_audio(self, p, cel=None):
+        """Recebe um tiro e responde. Um tiro ilegível não encerra a espera:
+        o adversário pode repeti-lo. cel: tiro que já chegou (veja _meu_turno_audio)."""
+        while cel is None:
+            self._ui(p, self._status, "Aguardando o tiro do adversário...", "espera")
+            texto = self._ouvir(p, "o tiro do adversário")
+            if texto is None:
+                self._ui(p, self._log, "Você desistiu de esperar o tiro. A vez passa para você.", "aviso")
+                return False
+            cel = bn.parse_coord(texto)
+            if cel is not None:
+                break
+            if texto in RESPOSTAS:
+                self._ui(p, self._log, f"Chegou uma resposta repetida ({texto!r}), não um tiro. "
+                                       "Continuo esperando o tiro.", "aviso")
+            else:
+                self._ui(p, self._log, f"Não entendi o tiro (chegou {texto!r}). Continuo ouvindo: "
+                                       "o adversário pode repetir o tiro.", "aviso")
+
         with p.trava:
             p.iniciou = True
             resultado = p.meu.receber_tiro(cel)
             p.ultimo_meu = cel
+            p.ultima_resposta = resultado
         self._ui(p, self._redesenhar)
         self._ui(p, self._log, f"O adversário atirou em {bn.fmt_coord(cel)}: {bn.descrever(resultado)}", "jogo")
         self._ui(p, self._status, "Respondendo...", "ocupado")
         self._enviar(p, resultado)
         return resultado == bn.VITORIA
+
+    def _repetir_resposta(self, p):
+        resposta = p.ultima_resposta
+        self._ui(p, self._log, f"Repetindo a resposta {resposta!r} ({bn.descrever(resposta)}).", "jogo")
+        self._ui(p, self._status, "Repetindo a resposta... silêncio na sala", "ocupado")
+        self._enviar(p, resposta)
+        self._ui(p, self._sua_vez_agora)
 
     # ---- canal
 
@@ -643,17 +725,21 @@ class App(tk.Tk):
         self._ui(p, self._log, f"enviado  → {texto!r:<5} hex {_hex(texto):<6} {dur:4.1f}s", "tx")
         self._ui(p, self._fase_parado)
 
-    def _ouvir(self, p, oque):
-        """Como tl.gravar(), mas com saída: Parar de ouvir ou uma nova partida
-        encerram a escuta. Devolve o texto decodificado, ou None se interrompida."""
+    def _ouvir(self, p, oque, repetir=None):
+        """Como tl.gravar(), mas com saída: Parar de ouvir, Repetir tiro ou uma
+        nova partida encerram a escuta. Devolve o texto decodificado, None se
+        interrompida por Parar de ouvir, ou REPETIR.
+
+        repetir: rótulo do botão Repetir enquanto ouve; None o deixa desligado."""
         sd = tl._sounddevice()
         p.pular.clear()
-        self._ui(p, self._fase_rx, oque)
+        p.repetir.clear()
+        self._ui(p, self._fase_rx, oque, repetir)
         analisar = getattr(tl, "analisar_bloco", None)
         ultimo = [0.0]
 
         def blocos():
-            while not (p.pular.is_set() or p.encerrada.is_set()):
+            while not (p.pular.is_set() or p.repetir.is_set() or p.encerrada.is_set()):
                 dados, _overflow = stream.read(tl.CHUNK)
                 bloco = dados[:, 0]
                 agora = time.monotonic()
@@ -678,9 +764,11 @@ class App(tk.Tk):
             stream.close()
         self._ui(p, self._fase_parado)
         p.checar()
+        if p.repetir.is_set():
+            p.repetir.clear()
+            return REPETIR
         if p.pular.is_set():
             p.pular.clear()
-            self._ui(p, self._log, "Escuta interrompida por você.", "aviso")
             return None
 
         texto = tl.signal_to_text(sinal)
@@ -727,13 +815,26 @@ class App(tk.Tk):
         self.btn_sortear.config(state="disabled" if p.iniciou or p.fim else "normal")
 
     def _sua_vez_agora(self):
+        p = self.p
         self._status("Sua vez: clique numa casa do tabuleiro inimigo", "vez")
         self._redesenhar()
         self.grade_mira.atualizar(self.grade_mira.estados, self.grade_mira.ultimo, ativa=True)
+        if p.modo != "cpu" and p.ultima_resposta:
+            self._modo_repetir("resposta", f"Repetir resposta ({bn.descrever(p.ultima_resposta)})")
+
+    def _modo_repetir(self, modo, rotulo=None):
+        self.repetir_modo = modo
+        self.dica_dada = False
+        if rotulo:
+            self.btn_repetir.config(text=rotulo)
+        self.btn_repetir.config(state="normal" if modo else "disabled",
+                                bg=COR["destaque"] if modo else COR["borda"],
+                                fg=COR["fundo"] if modo else COR["texto"])
 
     def _terminar(self, venceu):
         p = self.p
         p.fim = "vitoria" if venceu else "derrota"
+        self._modo_repetir(None)
         self.grade_mira.atualizar(self.grade_mira.estados, self.grade_mira.ultimo, ativa=False)
         self._redesenhar()
         self._fase_parado()
@@ -747,6 +848,7 @@ class App(tk.Tk):
 
     def _erro(self, e):
         self._fase_parado()
+        self._modo_repetir(None)
         self._log(f"Erro: {e}", "erro")
         self._status("Erro no áudio. Veja o registro e comece uma nova partida.", "derrota")
         self.grade_mira.atualizar(self.grade_mira.estados, self.grade_mira.ultimo, ativa=False)
@@ -775,14 +877,16 @@ class App(tk.Tk):
         self.barra.stop()
         self.barra.config(mode="determinate", value=0)
         self.btn_parar.config(state="disabled")
+        self._modo_repetir(None)
 
-    def _fase_rx(self, oque):
+    def _fase_rx(self, oque, repetir=None):
         self.anim = None
         self.ouvindo_desde = time.monotonic()
         self.texto_fase = f"OUVINDO {oque}"
         self.barra.config(mode="indeterminate")
         self.barra.start(15)
         self.btn_parar.config(state="normal")
+        self._modo_repetir("tiro" if repetir else None, repetir)
 
     def _fase_ocupado(self, texto):
         self.anim = None
@@ -799,6 +903,7 @@ class App(tk.Tk):
         self.barra.stop()
         self.barra.config(mode="determinate", value=0)
         self.btn_parar.config(state="disabled")
+        self._modo_repetir(None)
         self._nivel(0.0, None)
 
     def _nivel(self, rms, tom):
@@ -809,15 +914,28 @@ class App(tk.Tk):
         cor = COR["acerto"] if frac > 0.92 else COR["ok"]
         self.medidor.create_rectangle(0, 0, int(largura * frac), 12, fill=cor, outline="")
         self.lbl_tom.config(text=tom or "")
+        if tom:
+            self.ultimo_tom = time.monotonic()
 
     def _tique(self):
+        agora = time.monotonic()
         texto = self.texto_fase
         if self.anim:
             ini, dur = self.anim
-            decorrido = time.monotonic() - ini
-            self.barra.config(value=min(1000, 1000 * decorrido / dur))
+            self.barra.config(value=min(1000, 1000 * (agora - ini) / dur))
         elif self.ouvindo_desde:
-            texto += f" · {time.monotonic() - self.ouvindo_desde:.0f}s"
+            ouvindo = agora - self.ouvindo_desde
+            texto += f" · {ouvindo:.0f}s"
+            if self.repetir_modo == "tiro":
+                # Repetir por cima de uma resposta que está chegando estragaria as duas.
+                chegando = agora - self.ultimo_tom < TOM_RECENTE_S
+                if chegando:
+                    texto += " · recebendo sinal"
+                self.btn_repetir.config(state="disabled" if chegando else "normal")
+                if ouvindo > DICA_SEM_RESPOSTA_S and not chegando and not self.dica_dada:
+                    self.dica_dada = True
+                    self._status(f"Sem resposta há {DICA_SEM_RESPOSTA_S}s. Se o adversário não ouviu "
+                                 "o tiro, clique em Repetir tiro.", "vez")
         self.lbl_fase.config(text=texto)
         self.after(100, self._tique)
 
