@@ -32,6 +32,7 @@ comandos.
 | [`v2/`](v2/README.md)   | Mesmo protocolo, revisado e documentado.                              |
 | [`v3/`](v3/README.md)   | Vira jogo: Batalha Naval jogado inteiramente por som, com modo loopback (testa sem hardware) e suíte de testes automatizados. |
 | [`v4/`](v4/README.md)   | **Recomendada.** Mesmo protocolo da v3, só que numa faixa de som **audível** (1–3,5 kHz) — pensada para facilitar teste e depuração antes de migrar para a faixa quase-ultrassônica definitiva. |
+| [`diagnostico/`](diagnostico/README.md) | Ferramenta para testar a transmissão entre 2 PCs e explicar, etapa por etapa, por que deu certo ou errado. |
 | [`docs/`](docs/)        | Documentação do projeto (Termo de Abertura, Planejamento de Entregáveis, Documentação da Fase 1), em português. |
 
 Cada pasta de versão tem seu próprio `README.md` com os detalhes de como o
@@ -54,6 +55,10 @@ pessoas), use o modo `--audio`:
 python batalha_naval.py --audio anfitriao   # numa máquina
 python batalha_naval.py --audio convidado   # na outra
 ```
+
+Se não funcionar entre as duas máquinas, rode o
+[diagnóstico](diagnostico/README.md) (`receber` num PC, `emitir` no outro) e
+anexe o `.wav` e o relatório gerados.
 
 Encontrou um problema? Abra uma [issue](../../issues) descrevendo o que
 rodou e o que aconteceu — inclui, se possível, a saída do terminal.

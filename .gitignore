@@ -23,6 +23,7 @@ mensagem.txt
 mensagem_recebida.txt
 decoded_out
 *.wav
+*_relatorio.txt
 
 # Configuracao local do Claude Code (pessoal, nao compartilhada)
 .claude/settings.local.json
