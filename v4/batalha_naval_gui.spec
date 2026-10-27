@@ -5,7 +5,7 @@ a = Analysis(
     ['batalha_naval_gui.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('fontes', 'fontes')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

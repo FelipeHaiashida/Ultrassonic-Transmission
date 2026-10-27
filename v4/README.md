@@ -35,6 +35,7 @@ receptor novo.
 | `transfer_lib.py`   | Protocolo: codificação, decodificação, canal real e loopback |
 | `batalha_naval.py`  | O jogo, em modo loopback ou áudio real                    |
 | `batalha_naval_gui.py` | O mesmo jogo, com interface gráfica (tkinter)          |
+| `fontes/`           | Fontes pixel da interface gráfica, com as licenças       |
 | `loopback_test.py`  | Suíte de testes que roda sem hardware                     |
 | `perfil_sweep.py`   | Mede quanto do preâmbulo dá para cortar                   |
 | `emissor.py`        | Gera `transmissao.wav` a partir de um texto               |
@@ -73,9 +74,16 @@ python batalha_naval_gui.py
 A janela pergunta o modo (contra a CPU, anfitrião ou convidado) e mostra os
 dois tabuleiros. Para atirar, clique numa casa do tabuleiro da direita. O
 painel do modem mostra cada mensagem trafegando, com o hex e se chegou
-inteira. No áudio real, ele mostra também o nível do microfone e o tom do
-protocolo que está sendo reconhecido (`SYNC` ou a frequência do dígito). Só usa
-`tkinter`, que já vem com o Python.
+inteira, e um espectro com os 17 tons do protocolo (o sync e os 16 dígitos):
+na transmissão acende o tom que está tocando; no áudio real, o que o microfone
+capta, com o tom reconhecido em destaque. Só usa `tkinter`, que já vem com o
+Python.
+
+O visual é pixel art, desenhado a partir de um protótipo no Claude Design:
+cada casa é uma peça de 12x12 pixels, e a janela escolhe a escala que cabe na
+tela. As fontes Press Start 2P e VT323 (licença OFL) ficam em `fontes/` e são
+carregadas só para o jogo, sem instalar nada no sistema. Fora do Windows, a
+janela usa fontes do sistema.
 
 No áudio real, uma mensagem pode se perder no ar. A interface tem três saídas:
 
